@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>De Jong Strange Attractor · ASCII Simulation</title>
+  <meta name="description" content="A ghostly fractal web of the Peter de Jong attractor, rendered as tiny monospace glyphs on a drifting code sky. Real dynamical systems at 60fps — fork it and play.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:  #050a10;        /* deep water backdrop */
+      --ink: #eaf6ff;        /* near-white text */
+      --amber: #6fe0ff;      /* aqua accent */
+      --orange: #2bb8d6;     /* teal accent */
+      --glow: rgba(43, 184, 214, 0.6);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+    body { font-family: "Inter", system-ui, -apple-system, sans-serif; }
+
+    /* The simulation lives here — one canvas, filling the viewport. */
+    #field { position: fixed; inset: 0; display: block; width: 100vw; height: 100vh; }
+
+    /* ============================ Top-right buttons ============================ */
+    .controls-bar { position: fixed; top: 18px; right: 18px; display: flex; gap: 10px; z-index: 8; }
+    .ui-btn {
+      font-family: "Inter", system-ui, sans-serif;
+      font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+      color: var(--ink); background: rgba(20, 12, 30, 0.6);
+      border: 1px solid rgba(43, 184, 214, 0.5); border-radius: 0;
+      padding: 10px 12px; cursor: pointer;
+      box-shadow: 0 0 16px rgba(43, 184, 214, 0.22);
+      transition: background .15s, color .15s;
+    }
+    .ui-btn:hover { background: rgba(43, 184, 214, 0.85); color: #0a0612; }
+    .ui-btn[aria-pressed="true"] { background: var(--amber); color: #0a0612; }
+
+    /* Always-visible pull-tab that rides the control panel's edge. When the panel
+       is closed it sits flush on the left edge; when open it slides out to the
+       panel's right side. Either way you can always grab it to toggle. */
+    #ctlTab {
+      position: fixed; top: 50%; left: 0; transform: translateY(-50%);
+      z-index: 7; cursor: pointer;
+      writing-mode: vertical-rl; text-orientation: mixed;
+      font-family: "Inter", system-ui, sans-serif;
+      font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+      color: #0a0612; background: var(--amber);
+      border: 0; border-radius: 0 7px 7px 0; padding: 14px 7px;
+      box-shadow: 3px 0 14px rgba(43, 184, 214, 0.4);
+      transition: left .3s ease, background .15s, color .15s;
+    }
+    #ctlTab::after { content: " \203A"; }              /* › : "open me" hint when closed */
+    #ctlTab.shift { left: min(310px, 88vw); }
+    #ctlTab.shift::after { content: " \2039"; }        /* ‹ : "close me" hint when open */
+    #ctlTab:hover { background: var(--orange); color: #fff; }
+
+    /* ============================ Control panel (left) ========================= */
+    #controls {
+      position: fixed; top: 0; left: 0; height: 100%;
+      width: min(310px, 88vw);
+      background: rgba(8, 5, 14, 0.93);
+      border-right: 1px solid rgba(43, 184, 214, 0.35);
+      box-shadow: 10px 0 34px rgba(0, 0, 0, 0.5);
+      transform: translateX(-100%);
+      transition: transform .3s ease;
+      z-index: 7; padding: 20px 18px 30px; overflow-y: auto;
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+      color: #d7e3ff;
+    }
+    #controls.open { transform: translateX(0); }
+    #controls h1 {
+      font-family: "Inter", system-ui, sans-serif;
+      font-size: 14px; color: var(--amber); margin: 0 0 6px; letter-spacing: 1px; line-height: 1.5;
+    }
+    #controls .sub { font-size: 11px; color: #8a93ad; margin-bottom: 16px; line-height: 1.5; }
+    #controls .grp {
+      margin: 20px 0 8px; font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+      color: var(--orange); border-bottom: 1px solid rgba(43, 184, 214, 0.2); padding-bottom: 4px;
+    }
+    .ctl { margin: 11px 0; }
+    .ctl .lbl { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 5px; }
+    .ctl .lbl .k { color: #8a93ad; }
+    .ctl .lbl input.v {
+      width: 72px; text-align: right; background: transparent; border: 0; outline: none;
+      color: var(--ink); font: inherit; font-variant-numeric: tabular-nums;
+      padding: 1px 3px; border-radius: 3px; cursor: text; -moz-appearance: textfield;
+    }
+    .ctl .lbl input.v:hover { background: rgba(43, 184, 214, 0.10); }
+    .ctl .lbl input.v:focus { background: rgba(43, 184, 214, 0.18); box-shadow: inset 0 0 0 1px rgba(43, 184, 214, 0.55); color: #fff; }
+    .ctl input[type=range] {
+      -webkit-appearance: none; appearance: none; width: 100%; height: 3px;
+      background: rgba(43, 184, 214, 0.25); border-radius: 2px; outline: none; cursor: pointer;
+    }
+    .ctl input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none; width: 13px; height: 13px; border-radius: 0;
+      background: var(--amber); border: 1px solid #0a0612; cursor: pointer;
+    }
+    .ctl input[type=range]::-moz-range-thumb {
+      width: 12px; height: 12px; border-radius: 0; background: var(--amber); border: 1px solid #0a0612; cursor: pointer;
+    }
+    .palette-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .pal-btn {
+      flex: 1 1 auto; font-family: "Inter", system-ui, sans-serif;
+      font-size: 8px; letter-spacing: 0.5px; text-transform: uppercase;
+      color: #d7e3ff; background: rgba(20, 12, 30, 0.6);
+      border: 1px solid rgba(43, 184, 214, 0.35); padding: 8px 6px; cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .pal-btn:hover, .pal-btn.active { background: var(--orange); color: #0a0612; }
+    .btn-row { display: flex; gap: 8px; margin-top: 18px; }
+    .act-btn {
+      flex: 1; font-family: "Inter", system-ui, sans-serif;
+      font-size: 8px; letter-spacing: 0.5px; text-transform: uppercase;
+      color: var(--amber); background: rgba(20, 12, 30, 0.6);
+      border: 1px solid rgba(43, 184, 214, 0.45); padding: 10px 6px; cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .act-btn:hover { background: var(--amber); color: #0a0612; }
+
+    /* ============================ Attractor telemetry (right) ================= */
+    .sidebar {
+      position: fixed; top: 0; right: 0; height: 100%;
+      width: min(330px, 86vw);
+      background: rgba(8, 5, 14, 0.93);
+      border-left: 1px solid rgba(43, 184, 214, 0.35);
+      box-shadow: -10px 0 34px rgba(0, 0, 0, 0.5);
+      transform: translateX(100%);
+      transition: transform .3s ease;
+      z-index: 6; padding: 22px 20px; overflow-y: auto;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+      color: #d7e3ff;
+    }
+    .sidebar.open { transform: translateX(0); }
+    .sidebar h2 { font-family: "Inter", system-ui, sans-serif; font-size: 12px; color: var(--amber); margin: 0 0 6px; letter-spacing: 1px; line-height: 1.4; }
+    .sidebar .sub { font-size: 11px; color: #8a93ad; margin-bottom: 14px; }
+    .sidebar .grp { margin: 18px 0 6px; font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--orange); border-bottom: 1px solid rgba(43, 184, 214, 0.2); padding-bottom: 4px; }
+    .sidebar .row { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; padding: 3px 0; }
+    .sidebar .row .k { color: #8a93ad; }
+    .sidebar .row .v { color: #e9f1ff; font-variant-numeric: tabular-nums; text-align: right; }
+    .sidebar .close, #controls .close { position: absolute; top: 12px; right: 14px; background: none; border: 0; color: #8a93ad; font-size: 20px; line-height: 1; cursor: pointer; }
+    .sidebar .close:hover, #controls .close:hover { color: var(--amber); }
+    .tag-chaotic { color: #7CFC9A; }
+    .tag-marginal { color: var(--amber); }
+    .tag-periodic { color: #ff7a7a; }
+
+    /* Bottom hint */
+    .hint { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 4; font-family: "Inter", system-ui, sans-serif; font-size: 9px; color: rgba(231, 241, 255, 0.4); letter-spacing: 1px; pointer-events: none; text-align: center; }
+  </style>
+</head>
+<body>
+  <canvas id="field"></canvas>
+
+  <!-- Top-right buttons -->
+  <div class="controls-bar">
+    <button class="ui-btn" id="ctlBtn" aria-pressed="false">Controls</button>
+    <button class="ui-btn" id="physBtn" aria-pressed="false">Telemetry</button>
+  </div>
+
+  <!-- ======================= Left: live control panel ======================= -->
+  <aside id="controls" aria-hidden="true">
+    <button class="close" id="ctlClose" aria-label="Close controls">&times;</button>
+    <h1>Controls</h1>
+    <div id="ctl-groups"><!-- sliders injected by JS --></div>
+
+    <div class="grp">Palette</div>
+    <div class="palette-row" id="palette-row"><!-- palette buttons injected by JS --></div>
+
+    <div class="grp">Presets</div>
+    <div class="palette-row" id="attr-row"><!-- preset buttons injected by JS --></div>
+
+    <div class="btn-row">
+      <button class="act-btn" id="randomBtn">Randomize</button>
+      <button class="act-btn" id="resetBtn">Reset</button>
+      <button class="act-btn" id="copyBtn">Copy config</button>
+    </div>
+  </aside>
+
+  <!-- ======================= Right: attractor telemetry ===================== -->
+  <aside class="sidebar" id="sidebar" aria-hidden="true">
+    <button class="close" id="sbClose" aria-label="Close telemetry">&times;</button>
+    <h2>Telemetry</h2>
+
+    <div class="grp">Performance</div>
+    <div class="row"><span class="k">FPS</span><span class="v" id="t_fps">–</span></div>
+    <div class="row"><span class="k">Frame time</span><span class="v" id="t_ms">–</span></div>
+    <div class="row"><span class="k">Map iters / frame</span><span class="v" id="t_iters">–</span></div>
+    <div class="row"><span class="k">Glyphs drawn</span><span class="v" id="t_glyphs">–</span></div>
+
+    <div class="grp">Dynamics</div>
+    <div class="row"><span class="k">a (drifted)</span><span class="v" id="t_a">–</span></div>
+    <div class="row"><span class="k">b (drifted)</span><span class="v" id="t_b">–</span></div>
+    <div class="row"><span class="k">c (drifted)</span><span class="v" id="t_c">–</span></div>
+    <div class="row"><span class="k">d (drifted)</span><span class="v" id="t_d">–</span></div>
+    <div class="row"><span class="k">Lyapunov λ</span><span class="v" id="t_lambda">–</span></div>
+    <div class="row"><span class="k">Occupancy</span><span class="v" id="t_occ">–</span></div>
+
+    <div class="grp">Geometry</div>
+    <div class="row"><span class="k">World box</span><span class="v">[-2.05, 2.05]²</span></div>
+    <div class="row"><span class="k">Grid cols × rows</span><span class="v" id="t_grid">–</span></div>
+  </aside>
+
+  <div class="hint">press H to hide UI</div>
+
+<script>
+"use strict";
+
+/* ============================================================================
+   Peter de Jong strange-attractor — standalone ASCII edition.
+   Author: Vaishanth Srinivasan
+
+   HOW IT WORKS (the 30-second version):
+     The de Jong map is two lines of trig:
+        x' = sin(a*y) - cos(b*x)
+        y' = sin(c*x) - cos(d*y)
+     Iterate it millions of times and the points pile up on a fractal set. We
+     count visits into a grid (the "density field") — that histogram, log-toned
+     and drawn as an oscilloscope-style phosphor, IS the ghostly web. Behind it
+     drifts an independent "code sky" of streaming glyphs for atmosphere.
+
+   HOW TO HACK IT:
+     1. Tweak any number in CONFIG below (or drag the sliders — same thing, live).
+     2. Add a slider: drop one line into the CONTROLS array further down.
+     3. The whole simulation lives in the frame() loop, ~1 screen down.
+   The world box is [-2.05, 2.05]^2 — every iterate is guaranteed to sit inside.
+   ============================================================================ */
+const CONFIG = {
+  // ---- render ----
+  fontSize:    9,       // glyph size in px — deliberately small so filaments resolve
+  lineHeight:  1.2,     // cell height = fontSize * lineHeight
+  maxDPR:      1.5,     // cap device-pixel-ratio (lower = fewer pixels = faster)
+  levels:      26,      // colour quantization buckets
+
+  // ---- map constants (base values; drift + mouse modulate on top) ----
+  a: 1.641, b: 1.902, c: 0.316, d: 1.525,
+
+  // ---- animation ("the attractor breathes") ----
+  driftAmp:    0.06,    // amplitude of the slow sinusoidal drift of a,b,c,d
+  driftSpeed:  0.5,     // how fast the constants drift
+  mouseSense:  0.6,     // pointer nudge of a (x) and c (y)
+
+  // ---- density web (Layer A) — an oscilloscope-style phosphor. Each frame paints a
+  //      fresh batch of map iterations, then the whole field fades a touch. The newest
+  //      iterations sit at the highest opacity; older ones dim slowly (fieldDecay). ----
+  fieldIters:  22000,   // painter-orbit iterations per frame (fewer -> clearer recency)
+  fieldDecay:  0.975,   // per-frame persistence (higher -> trails last longer)
+  exposure:    1.9,     // log tone-map exposure (higher = brighter web)
+  webScroll:   3.0,     // how fast source code streams through the web (chars/sec)
+  webCap:      1.0,     // brightest the web reaches (full palette range)
+  threshold:   0.015,   // cells dimmer than this are left to the background sky
+
+  // ---- background "code sky" (Layer 0) — a full, continuous field, ported from the
+  //      Schwarzschild ray tracer's lensed-code background. Its own independent pass. ----
+  bgGlow:      1.0,     // master brightness of the sky (0 = off / pure black)
+  bgScroll:    0.6,     // gentle character streaming through the field
+  bgScale:     0.045,   // spatial frequency — broad, soft ribbons (smaller = broader)
+  bgFlow:      0.22,    // how fast the field morphs and flows over time
+  bgContrast:  1.7,     // ridge/valley separation (smooth pow curve via ambLUT)
+
+  // ---- world box zoom (nice-to-have; default identity) ----
+  zoom:        1.0,
+
+  // Active colour ramp [r,g,b], cold valley first -> hot ridge last. Swapped by presets.
+  // Default is "Aqua" — the liquid-in-water look.
+  palette: [
+    [3,10,24], [6,32,60], [10,70,104], [18,120,150],
+    [40,170,190], [96,214,220], [176,240,242], [224,253,255],
+  ],
+};
+
+/* Named palette presets — the "Palette" buttons swap CONFIG.palette to one of these.
+   The first three are the new "liquid in water" ramps; the original five follow. */
+const PALETTES = {
+  // --- Liquid-in-water ramps (deep ocean -> teal -> aqua -> foam/caustics) ---
+  Aqua:      [[3,10,24],[6,32,60],[10,70,104],[18,120,150],[40,170,190],[96,214,220],[176,240,242],[224,253,255]],
+  Abyss:     [[2,4,16],[6,14,44],[10,30,80],[18,58,120],[30,96,160],[60,150,200],[130,205,235],[210,245,255]],
+  Lagoon:    [[2,14,16],[4,34,40],[8,66,68],[16,104,98],[34,150,132],[74,196,168],[150,230,206],[220,252,240]],
+  // --- Original ramps (kept as-is) ---
+  Inferno:   [[27,18,34],[40,11,84],[101,21,110],[159,42,99],[212,72,66],[245,125,21],[250,193,39],[252,255,164]],
+  Ice:       [[6,10,30],[15,32,74],[24,64,120],[36,110,168],[76,166,205],[142,214,229],[205,244,248],[240,253,255]],
+  Viridis:   [[38,6,60],[54,32,110],[45,88,140],[33,140,141],[63,188,115],[151,215,66],[221,227,24],[253,231,37]],
+  Matrix:    [[2,10,4],[6,28,10],[10,52,18],[18,86,30],[36,140,48],[90,200,80],[170,240,150],[220,255,210]],
+  Solar:     [[20,6,2],[60,10,6],[110,22,10],[168,50,14],[214,96,20],[240,150,40],[250,205,90],[255,245,190]],
+};
+
+/* Named attractor presets — set the base (a, b, c, d). From Paul Bourke's gallery. */
+const ATTR_PRESETS = {
+  Classic: [ 1.641,  1.902,  0.316,  1.525],
+  Web:     [ 0.970, -1.899,  1.381, -1.506],
+  Moth:    [-2.240,  0.430, -0.650, -2.430],
+  Vortex:  [ 2.010, -2.530,  1.610, -0.330],
+  Ribbon:  [-2.000, -2.000, -1.200,  2.000],
+};
+
+/* Source text the glyphs are sampled from — gives the "scrolling code" identity.
+   Swap these strings for anything you like; the web and code sky render out of them. */
+const SOURCE = `
+DJ01_Genesis_DeJong_Map_X = "x' = sin(a*y) - cos(b*x)"
+DJ02_Genesis_DeJong_Map_Y = "y' = sin(c*x) - cos(d*y)"
+DJ03_Bourke_DeJong_Bounds = "x, y in [-2, 2] for all a,b,c,d in [-3,3]"
+LZ63_Butterfly_Lorenz_System = "dx/dt = sigma*(y-x); dy/dt = x*(rho-z)-y; dz/dt = x*y - beta*z"
+RS76_Roessler_Attractor = "dx/dt = -y-z; dy/dt = x+a*y; dz/dt = b+z*(x-c)"
+LG76_May_Logistic_Map = "x' = r * x * (1 - x)"
+HN76_Henon_Map = "x' = 1 - a*x^2 + y; y' = b*x"
+IK79_Ikeda_Map = "z' = A + B*z*exp(i*(k - p/(1+|z|^2)))"
+CL79_Clifford_Attractor = "x' = sin(a*y)+c*cos(a*x); y' = sin(b*x)+d*cos(b*y)"
+LY01_Oseledets_Lyapunov_Exponent = "lambda = lim (1/n) * sum ln|J(x_k) * v_k|"
+JC01_DeJong_Jacobian = "J = [[b*sin(b*x), a*cos(a*y)], [c*cos(c*x), d*sin(d*y)]]"
+FG78_Feigenbaum_Delta = "delta = 4.669201609102990671853..."
+FG79_Feigenbaum_Alpha = "alpha = 2.502907875095892822283..."
+KY79_Kaplan_Yorke_Dimension = "D = j + (lambda_1 + ... + lambda_j) / |lambda_(j+1)|"
+SM67_Smale_Horseshoe = "stretch + fold => sensitive dependence"
+PC90_Poincare_Recurrence = "orbit returns arbitrarily close to its start"
+MB75_Mandelbrot_Fractal_Dimension = "N(epsilon) ~ epsilon^(-D)"
+SH64_Sharkovskii_Order = "period three implies every period"
+DV89_Devaney_Chaos = "sensitive + transitive + dense periodic orbits"
+IN01_Invariant_Density = "rho(x) = lim (1/n) * sum delta(x - x_k)"
+`;
+const LINES = SOURCE.trim().split("\n").map(s => s.trim() + "  ");
+
+/* ---- Fast integer-lattice value noise + fBm (no deps) — same generator as the
+   Schwarzschild ray tracer. Drives the dim, animated background code field so its
+   bright ridges drift over time: the moving flow is what the colour highlights. ---- */
+function vhash(ix, iy, iz) {
+  let n = (ix | 0) * 374761393 + (iy | 0) * 668265263 + (iz | 0) * 1274126177;
+  n = (n ^ (n >>> 13)) >>> 0;
+  n = (n * 1274126177) >>> 0;
+  return (n & 0xffffff) / 0x1000000;
+}
+const smooth = t => t * t * (3 - 2 * t);
+function valueNoise(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = smooth(x - xi), yf = smooth(y - yi), zf = smooth(z - zi);
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const c000 = vhash(xi,   yi,   zi),   c100 = vhash(xi+1, yi,   zi);
+  const c010 = vhash(xi,   yi+1, zi),   c110 = vhash(xi+1, yi+1, zi);
+  const c001 = vhash(xi,   yi,   zi+1), c101 = vhash(xi+1, yi,   zi+1);
+  const c011 = vhash(xi,   yi+1, zi+1), c111 = vhash(xi+1, yi+1, zi+1);
+  return lerp(
+    lerp(lerp(c000, c100, xf), lerp(c010, c110, xf), yf),
+    lerp(lerp(c001, c101, xf), lerp(c011, c111, xf), yf),
+    zf
+  );
+}
+function fbm(x, y, z, octaves) {
+  let sum = 0, amp = 0.5, freq = 1, norm = 0;
+  for (let o = 0; o < octaves; o++) {
+    sum  += amp * valueNoise(x * freq, y * freq, z * freq);
+    norm += amp; amp *= 0.5; freq *= 2;
+  }
+  return sum / norm;
+}
+
+// ---- Renderer ----
+const canvas = document.getElementById("field");
+const ctx = canvas.getContext("2d", { alpha: false });
+
+let W = 0, H = 0, dpr = 1;
+let cellW = 0, cellH = 0, cols = 0, rows = 0;
+
+// World box (guaranteed to contain every iterate) + screen transform, recomputed on resize.
+const BOX = 2.05;
+let originX = 0, originY = 0, worldScale = 1;   // screen_px = origin + world * scale (y flipped)
+
+// Density field (Layer A) — one Float32 cell per character cell. Reallocated on resize.
+let density = new Float32Array(1);
+let dMax = 1;   // smoothed max cell value, drives the log tone-map
+
+// Background field (Layer 0) — one fBm sample per column, refreshed every other row
+// (the field is soft, so half-res sampling is invisible but ~4x cheaper).
+let ambRow = new Float32Array(1);
+
+// Ambient tone curve: folds the background contrast pow() out of the per-cell loop
+// (same trick as the ray tracer). Refilled each frame from the live bg sliders.
+const ambLUT = new Float32Array(256);
+function buildAmbLUT(low, high, contrast) {
+  for (let i = 0; i < 256; i++) {
+    const a = Math.pow(i / 255, contrast);
+    ambLUT[i] = low + (high - low) * a;
+  }
+}
+
+// Palette LUT (brightness level -> "rgb(...)" string). Rebuilt when the palette changes.
+const LUT = new Array(CONFIG.levels + 1);
+function buildLUT() {
+  const stops = CONFIG.palette, segs = stops.length - 1;
+  for (let i = 0; i <= CONFIG.levels; i++) {
+    const t = i / CONFIG.levels;
+    const s = Math.min(segs - 1, Math.floor(t * segs));
+    const lt = t * segs - s;
+    const a = stops[s], b = stops[s + 1];
+    const r = Math.round(a[0] + (b[0] - a[0]) * lt);
+    const g = Math.round(a[1] + (b[1] - a[1]) * lt);
+    const bl = Math.round(a[2] + (b[2] - a[2]) * lt);
+    LUT[i] = `rgb(${r},${g},${bl})`;
+  }
+}
+buildLUT();
+
+// ---- Source text as char codes (no per-cell string allocation) ----
+const LINE_CODES = LINES.map(l => {
+  const a = new Uint16Array(l.length);
+  for (let i = 0; i < l.length; i++) a[i] = l.charCodeAt(i);
+  return a;
+});
+function getCodeAt(tx, ty) {
+  const n = LINE_CODES.length;
+  const arr = LINE_CODES[((ty % n) + n) % n];
+  const m = arr.length;
+  return arr[((tx % m) + m) % m];
+}
+
+// ---- Glyph atlas: each glyph rasterised ONCE per brightness level, then blitted ----
+const charCol = new Int16Array(128).fill(-1);
+const atlasChars = [];
+for (const arr of LINE_CODES) for (const code of arr) {
+  if (code !== 32 && code < 128 && charCol[code] === -1) { charCol[code] = atlasChars.length; atlasChars.push(code); }
+}
+const FALLBACK_COL = charCol[61] >= 0 ? charCol[61] : 0;   // '=' if present, else first
+
+let atlasBase, tileWd, tileHd;
+function buildAtlas() {
+  tileWd = Math.max(1, Math.ceil(cellW * dpr));
+  tileHd = Math.max(1, Math.ceil(cellH * dpr));
+  const fontDev = `${CONFIG.fontSize * dpr}px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace`;
+  atlasBase = document.createElement("canvas");
+  atlasBase.width = atlasChars.length * tileWd;
+  atlasBase.height = (CONFIG.levels + 1) * tileHd;
+  const a = atlasBase.getContext("2d");
+  a.textBaseline = "top"; a.font = fontDev;
+  for (let lvl = 0; lvl <= CONFIG.levels; lvl++) {
+    a.fillStyle = LUT[lvl];
+    for (let i = 0; i < atlasChars.length; i++) a.fillText(String.fromCharCode(atlasChars[i]), i * tileWd, lvl * tileHd);
+  }
+}
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, CONFIG.maxDPR);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.font = `${CONFIG.fontSize}px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace`;
+  ctx.textBaseline = "top";
+  cellW = ctx.measureText("M").width || CONFIG.fontSize * 0.6;
+  cellH = CONFIG.fontSize * CONFIG.lineHeight;
+  cols = Math.ceil(W / cellW) + 1;
+  rows = Math.ceil(H / cellH) + 1;
+  density = new Float32Array(cols * rows);
+  ambRow = new Float32Array(cols);
+  buildAtlas();
+  recomputeWorldTransform();
+}
+function recomputeWorldTransform() {
+  // Fit the square world box into the viewport (letterboxed), centred, then zoom.
+  const side = Math.min(W, H) * 0.94 * CONFIG.zoom;
+  worldScale = side / (2 * BOX);
+  originX = W * 0.5;
+  originY = H * 0.5;
+}
+window.addEventListener("resize", resize);
+
+// Pointer nudges the constants (eased). Ignore moves that start on the UI panels.
+let mxN = 0, myN = 0, pxN = 0, pyN = 0;
+window.addEventListener("pointermove", e => {
+  if (e.target.closest("#controls, .sidebar, .controls-bar")) return;
+  mxN = (e.clientX / W - 0.5) * 2;
+  myN = (e.clientY / H - 0.5) * 2;
+});
+
+// ---- Current (drifted) constants, shared so buttons can seed orbits between frames ----
+let aCur = CONFIG.a, bCur = CONFIG.b, cCur = CONFIG.c, dCur = CONFIG.d;
+
+// ---- Painter orbit (paints the density field) ----
+let painterX = 0.1, painterY = 0.1;
+function burnInPainter() {
+  let x = 0.1, y = 0.1;
+  for (let i = 0; i < 40; i++) { const nx = Math.sin(aCur*y) - Math.cos(bCur*x); y = Math.sin(cCur*x) - Math.cos(dCur*y); x = nx; }
+  painterX = x; painterY = y;
+}
+
+// ---- Lyapunov probe orbit (dedicated, separate from render) ----
+let probeX = 0.1, probeY = 0.1, probeVX = 1, probeVY = 0, probeSum = 0, probeN = 0, lambdaSmooth = 0;
+function resetProbe() { probeX = 0.1; probeY = 0.1; probeVX = 1; probeVY = 0; probeSum = 0; probeN = 0; }
+const PROBE_ITERS = 16;
+
+/* Quick standalone Lyapunov estimate (used by Randomize to reject dead orbits). */
+function lyapEstimate(a, b, c, d, iters) {
+  let x = 0.1, y = 0.1, vx = 1, vy = 0, sum = 0, n = 0;
+  for (let i = 0; i < 60; i++) { const nx = Math.sin(a*y) - Math.cos(b*x); y = Math.sin(c*x) - Math.cos(d*y); x = nx; }
+  for (let i = 0; i < iters; i++) {
+    const j00 = b*Math.sin(b*x), j01 = a*Math.cos(a*y), j10 = c*Math.cos(c*x), j11 = d*Math.sin(d*y);
+    const wx = j00*vx + j01*vy, wy = j10*vx + j11*vy;
+    const nrm = Math.hypot(wx, wy);
+    if (nrm > 1e-12) { sum += Math.log(nrm); vx = wx/nrm; vy = wy/nrm; n++; }
+    const nx = Math.sin(a*y) - Math.cos(b*x); y = Math.sin(c*x) - Math.cos(d*y); x = nx;
+  }
+  return n > 0 ? sum / n : 0;
+}
+
+// ---- Telemetry state. statsOn gates the extra per-frame counting. ----
+let statsOn = false;
+let fpsAvg = 60, lastT = performance.now(), lastStatT = 0;
+let telIters = 0, telGlyphs = 0, telOcc = 0;
+
+// ---- Decode view: fades Layer A to a plain uniform code field and freezes drift. ----
+let decodeTarget = 0, decodeT = 0;
+const DECODE_LERP = 0.06;
+const DECODE_LERP_CLOSE = DECODE_LERP * 0.4;
+
+// ---- Adaptive quality: scales fieldIters down if the frame rate sags. ----
+let adaptiveScale = 1;
+
+/* ============================================================================
+   LAYER 0 — the "code sky" background. A full, continuous field of streaming
+   glyphs, ported from the Schwarzschild ray tracer's lensed-code background and
+   kept completely independent of the attractor: soft fBm ribbons that morph and
+   flow over time (bgFlow), gentle character streaming (bgScroll), a smooth
+   contrast tone-curve (ambLUT), all dim so the web reads clearly on top of it.
+   Rendered every frame across the whole viewport, before the attractor.
+   ============================================================================ */
+function renderBackground(t) {
+  const glow = CONFIG.bgGlow;
+  if (glow <= 0.001) return;
+  const levels = CONFIG.levels, scaleN = CONFIG.bgScale, drift = t * CONFIG.bgFlow;
+  const tx0 = t * CONFIG.bgScroll, ty0 = t * CONFIG.bgScroll * 0.3;
+  buildAmbLUT(0.03, 0.17, CONFIG.bgContrast);           // ray-tracer dim band + contrast curve
+  const maxLvl = (0.42 * levels) | 0;                   // ceiling keeps the sky under the web
+  const atlas = atlasBase, twd = tileWd, thd = tileHd, cw = cellW, chh = cellH;
+
+  for (let gy = 0; gy < rows; gy++) {
+    const py2 = gy * chh;
+    // Refresh the fBm row on even rows only (half-vertical-res; the field is soft).
+    if ((gy & 1) === 0) {
+      const ny = gy * scaleN;
+      for (let gx = 0; gx < cols; gx += 2) {
+        const v = fbm(gx * scaleN, ny, drift, 3);        // 3 octaves -> broad, smooth ribbons
+        ambRow[gx] = v; if (gx + 1 < cols) ambRow[gx + 1] = v;
+      }
+    }
+    const tyC = (gy + ty0) | 0;
+    for (let gx = 0; gx < cols; gx++) {
+      let lvl = (ambLUT[(ambRow[gx] * 255) | 0] * glow) * levels | 0;
+      if (lvl < 1) continue;                            // darkest cells stay black (sparse & cheap)
+      if (lvl > maxLvl) lvl = maxLvl;
+      const code = getCodeAt((gx + tx0) | 0, tyC);
+      if (code === 32) continue;                        // skip spaces -> an airier field
+      const col = charCol[code];
+      if (col < 0) continue;
+      ctx.drawImage(atlas, col*twd, lvl*thd, twd, thd, gx*cw, py2, cw, chh);
+    }
+  }
+}
+
+function frame(now) {
+  const t = now * 0.001;
+
+  const dtMs = now - lastT; lastT = now;
+  if (dtMs > 0) fpsAvg += (1000 / dtMs - fpsAvg) * 0.1;
+
+  // Hoist hot config into locals — re-read every frame so slider edits stay live.
+  const levels = CONFIG.levels, exposure = CONFIG.exposure;
+  const decay = CONFIG.fieldDecay, threshold = CONFIG.threshold;
+  const webCap = CONFIG.webCap;
+  const scale = worldScale, ox = originX, oy = originY, cw = cellW, chh = cellH;
+
+  // --- Decode fade (0 = full attractor, 1 = plain frozen code field) ---
+  decodeT += (decodeTarget - decodeT) * (decodeTarget < decodeT ? DECODE_LERP_CLOSE : DECODE_LERP);
+  const driftFactor = 1 - decodeT;
+
+  // --- Eased pointer -> constant nudge ---
+  pxN += (mxN - pxN) * 0.05;
+  pyN += (myN - pyN) * 0.05;
+  const ms = CONFIG.mouseSense, dsp = CONFIG.driftSpeed, da = CONFIG.driftAmp;
+  let a = CONFIG.a + da*Math.sin(0.31*t*dsp)       *driftFactor + pxN*ms*0.15*driftFactor;
+  let b = CONFIG.b + da*Math.sin(0.23*t*dsp + 2.1) *driftFactor;
+  let c = CONFIG.c + da*Math.sin(0.41*t*dsp + 4.2) *driftFactor + pyN*ms*0.15*driftFactor;
+  let d = CONFIG.d + da*Math.sin(0.29*t*dsp + 1.3) *driftFactor;
+  aCur = a; bCur = b; cCur = c; dCur = d;
+
+  /* =========================================================================
+     LAYER A — the density web, rendered as a phosphor.
+     Fade the whole grid a touch (fieldDecay), then run the painter orbit and add
+     each fresh visit. The newest iterations sit brightest; cells that stop being
+     visited dim slowly. Log tone-mapped, this is the invariant density with a
+     recency glow — an oscilloscope trace of the map.
+     ========================================================================= */
+  const grid = density, gLen = grid.length;
+  for (let i = 0; i < gLen; i++) grid[i] *= decay;
+
+  // Adaptive iteration count (release valve when the frame rate sags).
+  if (fpsAvg < 50) adaptiveScale *= 0.98; else if (fpsAvg > 58) adaptiveScale += (1 - adaptiveScale) * 0.05;
+  if (adaptiveScale < 0.2) adaptiveScale = 0.2; if (adaptiveScale > 1) adaptiveScale = 1;
+  const iters = Math.max(2000, (CONFIG.fieldIters * adaptiveScale) | 0);
+
+  let frameMax = dMax * 0.5;   // let the smoothed max relax downward if the web thins
+  let px = painterX, py = painterY;
+  for (let s = 0; s < iters; s++) {
+    const nx = Math.sin(a*py) - Math.cos(b*px);
+    py = Math.sin(c*px) - Math.cos(d*py); px = nx;
+    const sx = ox + px*scale, sy = oy - py*scale;
+    const gx = (sx / cw) | 0, gy = (sy / chh) | 0;
+    if (gx >= 0 && gx < cols && gy >= 0 && gy < rows) {
+      const idx = gy*cols + gx;
+      const v = grid[idx] + 1; grid[idx] = v;
+      if (v > frameMax) frameMax = v;
+    }
+  }
+  painterX = px; painterY = py;
+  dMax += (frameMax - dMax) * 0.05; if (dMax < 1) dMax = 1;
+
+  // Clear to the deep-water backdrop.
+  ctx.fillStyle = "#050a10";
+  ctx.fillRect(0, 0, W, H);
+
+  // Layer 0 — the independent, full-screen "code sky" background (its own pass).
+  // The attractor knows nothing about it; the web is simply drawn on top.
+  renderBackground(t);
+
+  const invLogMax = 1 / Math.log(1 + dMax * exposure);
+  const webScrollTx = (t * CONFIG.webScroll) | 0;
+  let glyphs = 0, occ = 0;
+  const atlas = atlasBase, twd = tileWd, thd = tileHd;
+
+  // Layer A — the phosphor attractor web, drawn on top of the sky. Skip empty cells
+  // (the main perf win) so this pass only touches the lit filaments.
+  for (let gy = 0; gy < rows; gy++) {
+    const rowBase = gy * cols;
+    const py2 = gy * chh;
+    for (let gx = 0; gx < cols; gx++) {
+      const dv = grid[rowBase + gx];
+      if (dv <= 0) continue;
+      let bright = Math.log(1 + dv * exposure) * invLogMax;
+      if (bright < threshold) continue;
+      if (statsOn) occ++;
+      if (decodeT > 0) bright = bright + (0.5 - bright) * decodeT;   // fade to a uniform code field
+      let lvl = (bright * webCap * levels) | 0;
+      if (lvl < 1) lvl = 1; else if (lvl > levels) lvl = levels;
+      const code = getCodeAt(gx + webScrollTx, gy);
+      let col = code === 32 ? FALLBACK_COL : charCol[code];
+      if (col < 0) col = FALLBACK_COL;
+      ctx.drawImage(atlas, col*twd, lvl*thd, twd, thd, gx*cw, py2, cw, chh);
+      glyphs++;
+    }
+  }
+
+  /* =========================================================================
+     Lyapunov probe — one dedicated orbit + tangent vector, a few steps a frame.
+     ========================================================================= */
+  for (let i = 0; i < PROBE_ITERS; i++) {
+    const j00 = b*Math.sin(b*probeX), j01 = a*Math.cos(a*probeY);
+    const j10 = c*Math.cos(c*probeX), j11 = d*Math.sin(d*probeY);
+    const wx = j00*probeVX + j01*probeVY, wy = j10*probeVX + j11*probeVY;
+    const nrm = Math.hypot(wx, wy);
+    if (nrm > 1e-12) { probeSum += Math.log(nrm); probeVX = wx/nrm; probeVY = wy/nrm; probeN++; }
+    const nx = Math.sin(a*probeY) - Math.cos(b*probeX);
+    probeY = Math.sin(c*probeX) - Math.cos(d*probeY); probeX = nx;
+  }
+  const lam = probeN > 0 ? probeSum / probeN : 0;
+  lambdaSmooth += (lam - lambdaSmooth) * 0.05;
+
+  if (statsOn) {
+    telIters = iters + PROBE_ITERS;
+    telGlyphs = glyphs;
+    telOcc = occ;
+    if (now - lastStatT > 200) { updateTelem(); lastStatT = now; }
+  }
+
+  requestAnimationFrame(frame);
+}
+
+// Seed everything, then start.
+burnInPainter();
+resize();
+requestAnimationFrame(frame);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { lastT = performance.now(); requestAnimationFrame(frame); } });
+
+// ---- Telemetry ----
+const $ = id => document.getElementById(id);
+function updateTelem() {
+  const total = cols * rows;
+  $("t_fps").textContent      = fpsAvg.toFixed(0);
+  $("t_ms").textContent       = (1000 / Math.max(fpsAvg, 0.01)).toFixed(1) + " ms";
+  $("t_iters").textContent    = telIters.toLocaleString();
+  $("t_glyphs").textContent   = telGlyphs.toLocaleString();
+  $("t_a").textContent        = aCur.toFixed(3);
+  $("t_b").textContent        = bCur.toFixed(3);
+  $("t_c").textContent        = cCur.toFixed(3);
+  $("t_d").textContent        = dCur.toFixed(3);
+  const tag = lambdaSmooth > 0.01 ? "chaotic" : lambdaSmooth < -0.01 ? "periodic" : "marginal";
+  const cls = lambdaSmooth > 0.01 ? "tag-chaotic" : lambdaSmooth < -0.01 ? "tag-periodic" : "tag-marginal";
+  $("t_lambda").innerHTML     = lambdaSmooth.toFixed(3) + ' <span class="' + cls + '">' + tag + '</span>';
+  $("t_occ").textContent      = (100 * telOcc / total).toFixed(1) + "%";
+  $("t_grid").textContent     = cols + " × " + rows;
+}
+
+/* ============================================================================
+   LIVE CONTROL PANEL.  Add a knob = add one row to CONTROLS below.
+   Each {k,...} row binds a slider straight to CONFIG[k]; a {g:"..."} row is a
+   group heading. Values re-read every frame in frame(), so edits are instant.
+   ============================================================================ */
+const CONTROLS = [
+  { g: "Map constants" },
+  { k: "a", label: "a", min: -6, max: 3, step: 0.01 },
+  { k: "b", label: "b", min: -6, max: 3, step: 0.01 },
+  { k: "c", label: "c", min: -6, max: 3, step: 0.01 },
+  { k: "d", label: "d", min: -7, max: 3, step: 0.01 },
+  { g: "Motion" },
+  { k: "driftAmp",    label: "Drift amp",    min: 0,   max: 0.3, step: 0.005 },
+  { k: "driftSpeed",  label: "Drift speed",  min: 0,   max: 2,   step: 0.01 },
+  { k: "mouseSense",  label: "Mouse sense",  min: 0,   max: 1.5, step: 0.01 },
+  { g: "Web" },
+  { k: "fieldIters",  label: "Iterations",   min: 3000, max: 120000, step: 1000 },
+  { k: "fieldDecay",  label: "Persistence",  min: 0.80, max: 0.99, step: 0.005 },
+  { k: "exposure",    label: "Brightness",   min: 0.2, max: 4,   step: 0.1 },
+  { k: "webScroll",   label: "Web scroll",   min: 0,   max: 8,   step: 0.1 },
+  { g: "Background sky" },
+  { k: "bgGlow",      label: "Sky glow",     min: 0,   max: 1.5, step: 0.05 },
+  { k: "bgScroll",    label: "Stream speed", min: 0,   max: 4,   step: 0.1 },
+  { k: "bgScale",     label: "Flow scale",   min: 0.02, max: 0.25, step: 0.005 },
+  { k: "bgFlow",      label: "Flow speed",   min: 0,   max: 0.6, step: 0.01 },
+  { k: "bgContrast",  label: "Contrast",     min: 0.6, max: 3,   step: 0.1 },
+];
+
+const DEFAULTS = JSON.parse(JSON.stringify(CONFIG));   // deep snapshot for Reset
+const sliderEls = {};   // key -> { input, show }
+
+function fmt(k, step) {
+  const v = +CONFIG[k];
+  if (step >= 1) return v.toFixed(0);
+  if (step < 0.01) return v.toFixed(3);
+  return v.toFixed(2);
+}
+function buildControlPanel() {
+  const root = $("ctl-groups");
+  for (const cc of CONTROLS) {
+    if (cc.g) {
+      const h = document.createElement("div");
+      h.className = "grp"; h.textContent = cc.g; root.appendChild(h);
+      continue;
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "ctl";
+    const lbl = document.createElement("div");
+    lbl.className = "lbl";
+    lbl.innerHTML = `<span class="k">${cc.label}</span>`;
+    const input = document.createElement("input");
+    input.type = "range"; input.min = cc.min; input.max = cc.max; input.step = cc.step;
+    input.value = CONFIG[cc.k];
+    // Editable value field — click the number and type a value (Enter / click-away commits).
+    const valEl = document.createElement("input");
+    valEl.className = "v"; valEl.type = "text"; valEl.inputMode = "decimal";
+    valEl.setAttribute("aria-label", cc.label + " value");
+    lbl.appendChild(valEl);
+    const show = () => { valEl.value = fmt(cc.k, cc.step); };
+    const apply = v => {                              // shared by slider drag AND typed value
+      CONFIG[cc.k] = v;
+      input.value = v;                               // move the thumb (snaps visually to step)
+      show();
+      if (cc.k === "a" || cc.k === "b" || cc.k === "c" || cc.k === "d") resetProbe();
+    };
+    input.addEventListener("input", () => apply(parseFloat(input.value)));
+    valEl.addEventListener("focus", () => valEl.select());     // click selects all -> type replaces
+    valEl.addEventListener("change", () => {                   // fires on blur / Enter
+      let v = parseFloat(valEl.value);
+      if (!isFinite(v)) { show(); return; }                    // ignore garbage, restore the number
+      if (v < cc.min) v = cc.min; else if (v > cc.max) v = cc.max;   // clamp to the slider's range
+      apply(v);
+    });
+    valEl.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); valEl.blur(); } });
+    show();
+    wrap.appendChild(lbl); wrap.appendChild(input); root.appendChild(wrap);
+    sliderEls[cc.k] = { input, show };
+  }
+}
+function refreshSliders() {
+  for (const k in sliderEls) { sliderEls[k].input.value = CONFIG[k]; sliderEls[k].show(); }
+}
+buildControlPanel();
+
+// Palette preset buttons
+let activePalette = "Aqua";
+function applyPalette(name) {
+  CONFIG.palette = PALETTES[name].map(cc => cc.slice());
+  activePalette = name;
+  buildLUT(); buildAtlas();
+  document.querySelectorAll(".pal-btn[data-pal]").forEach(bt => bt.classList.toggle("active", bt.dataset.pal === name));
+}
+(function buildPaletteRow() {
+  const row = $("palette-row");
+  for (const name in PALETTES) {
+    const bt = document.createElement("button");
+    bt.className = "pal-btn" + (name === activePalette ? " active" : "");
+    bt.dataset.pal = name; bt.textContent = name;
+    bt.addEventListener("click", () => applyPalette(name));
+    row.appendChild(bt);
+  }
+})();
+
+// Attractor preset buttons — set the base constants, reseed the orbits.
+function applyAttrPreset(name) {
+  const p = ATTR_PRESETS[name];
+  CONFIG.a = p[0]; CONFIG.b = p[1]; CONFIG.c = p[2]; CONFIG.d = p[3];
+  aCur = p[0]; bCur = p[1]; cCur = p[2]; dCur = p[3];
+  refreshSliders(); resetProbe(); burnInPainter();
+  document.querySelectorAll(".attr-btn").forEach(bt => bt.classList.toggle("active", bt.dataset.attr === name));
+}
+(function buildAttrRow() {
+  const row = $("attr-row");
+  for (const name in ATTR_PRESETS) {
+    const bt = document.createElement("button");
+    bt.className = "pal-btn attr-btn" + (name === "Classic" ? " active" : "");
+    bt.dataset.attr = name; bt.textContent = name;
+    bt.addEventListener("click", () => applyAttrPreset(name));
+    row.appendChild(bt);
+  }
+})();
+
+// Action buttons: randomize / reset / copy
+$("randomBtn").addEventListener("click", () => {
+  let a, b, c, d;
+  for (let tries = 0; tries < 8; tries++) {
+    a = Math.random()*6 - 3; b = Math.random()*6 - 3; c = Math.random()*6 - 3; d = Math.random()*6 - 3;
+    if (lyapEstimate(a, b, c, d, 2000) >= 0.01) break;      // never land on a dead fixed point
+  }
+  CONFIG.a = +a.toFixed(3); CONFIG.b = +b.toFixed(3); CONFIG.c = +c.toFixed(3); CONFIG.d = +d.toFixed(3);
+  aCur = CONFIG.a; bCur = CONFIG.b; cCur = CONFIG.c; dCur = CONFIG.d;
+  const names = Object.keys(PALETTES);
+  applyPalette(names[(Math.random() * names.length) | 0]);
+  refreshSliders(); resetProbe(); burnInPainter();
+  document.querySelectorAll(".attr-btn").forEach(bt => bt.classList.remove("active"));
+});
+$("resetBtn").addEventListener("click", () => {
+  Object.assign(CONFIG, JSON.parse(JSON.stringify(DEFAULTS)));
+  aCur = CONFIG.a; bCur = CONFIG.b; cCur = CONFIG.c; dCur = CONFIG.d;
+  buildLUT(); buildAtlas(); refreshSliders(); resetProbe(); burnInPainter();
+  recomputeWorldTransform();
+  document.querySelectorAll(".pal-btn[data-pal]").forEach(bt => bt.classList.toggle("active", bt.dataset.pal === "Aqua"));
+  document.querySelectorAll(".attr-btn").forEach(bt => bt.classList.toggle("active", bt.dataset.attr === "Classic"));
+  activePalette = "Aqua";
+});
+$("copyBtn").addEventListener("click", async () => {
+  const txt = JSON.stringify(CONFIG, null, 2);
+  try { await navigator.clipboard.writeText(txt); $("copyBtn").textContent = "Copied!"; }
+  catch (e) { $("copyBtn").textContent = "See console"; console.log(txt); }
+  setTimeout(() => { $("copyBtn").textContent = "Copy config"; }, 1200);
+});
+
+// ---- Panel open/close wiring ----
+const controls = $("controls"), sidebar = $("sidebar"), ctlBtn = $("ctlBtn"), physBtn = $("physBtn");
+function setControls(open) {
+  controls.classList.toggle("open", open);
+  controls.setAttribute("aria-hidden", String(!open));
+  ctlBtn.setAttribute("aria-pressed", String(open));
+}
+function setSidebar(open) {
+  statsOn = open;
+  sidebar.classList.toggle("open", open);
+  sidebar.setAttribute("aria-hidden", String(!open));
+  physBtn.setAttribute("aria-pressed", String(open));
+  if (open) lastStatT = 0;
+}
+ctlBtn.addEventListener("click", () => setControls(!controls.classList.contains("open")));
+$("ctlClose").addEventListener("click", () => setControls(false));
+physBtn.addEventListener("click", () => setSidebar(!sidebar.classList.contains("open")));
+$("sbClose").addEventListener("click", () => setSidebar(false));
+
+// Open the controls panel by default so the interactivity is discoverable.
+setControls(true);
+
+// ---- Keyboard: Esc closes panels, H hides ALL UI to admire the sim ----
+let uiHidden = false;
+function setUIHidden(hide) {
+  uiHidden = hide;
+  document.querySelectorAll("#controls, .sidebar, .controls-bar, .hint").forEach(el => {
+    el.style.transition = "opacity .25s ease";
+    el.style.opacity = hide ? "0" : "";
+    el.style.pointerEvents = hide ? "none" : "";
+  });
+}
+document.addEventListener("keydown", e => {
+  if (e.key === "h" || e.key === "H") { if (!e.target.closest("input")) setUIHidden(!uiHidden); return; }
+  if (e.key !== "Escape") return;
+  if (controls.classList.contains("open")) { setControls(false); return; }
+  if (sidebar.classList.contains("open")) { setSidebar(false); return; }
+});
+</script>
+</body>
+</html>
