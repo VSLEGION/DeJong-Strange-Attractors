@@ -201,7 +201,7 @@
     <div class="row"><span class="k">Grid cols × rows</span><span class="v" id="t_grid">–</span></div>
   </aside>
 
-  <div class="hint">press H to hide UI</div>
+  <div class="hint">Ctrl +/- to zoom · press H to hide UI</div>
 
 <script>
 "use strict";
@@ -246,6 +246,8 @@ const CONFIG = {
   fieldIters:  22000,   // painter-orbit iterations per frame (fewer -> clearer recency)
   fieldDecay:  0.975,   // per-frame persistence (higher -> trails last longer)
   exposure:    1.9,     // log tone-map exposure (higher = brighter web)
+  bloom:       0,       // WebGPU: bloom/glow strength (default off)
+  bloomThresh: 0.30,    // WebGPU: brightness above which the web blooms
   webScroll:   3.0,     // how fast source code streams through the web (chars/sec)
   webCap:      1.0,     // brightest the web reaches (full palette range)
   threshold:   0.015,   // cells dimmer than this are left to the background sky
@@ -257,6 +259,12 @@ const CONFIG = {
   bgScale:     0.045,   // spatial frequency — broad, soft ribbons (smaller = broader)
   bgFlow:      0.22,    // how fast the field morphs and flows over time
   bgContrast:  1.7,     // ridge/valley separation (smooth pow curve via ambLUT)
+
+  // ---- WebGPU swirl (inverse-mapped rotation of the whole glyph field, from index_mid) ----
+  speed:       0.25,    // attractor-glyph swirl speed
+  bgSpeed:     0.16,    // background swirl speed (decoupled — a touch slower)
+  swirl:       1.6,     // twist strength
+  swirlPower:  0.5,     // how the twist scales with distance from centre
 
   // ---- world box zoom (nice-to-have; default identity) ----
   zoom:        1.0,
@@ -353,8 +361,11 @@ function fbm(x, y, z, octaves) {
 }
 
 // ---- Renderer ----
+// One <canvas>, one context. The context type (2d vs webgpu) is chosen once, at
+// boot(), based on WebGPU availability — so `ctx` stays null in GPU mode and every
+// Canvas2D-only function below simply no-ops. R2D.init() acquires it for the fallback.
 const canvas = document.getElementById("field");
-const ctx = canvas.getContext("2d", { alpha: false });
+let ctx = null;
 
 let W = 0, H = 0, dpr = 1;
 let cellW = 0, cellH = 0, cols = 0, rows = 0;
@@ -421,9 +432,10 @@ const FALLBACK_COL = charCol[61] >= 0 ? charCol[61] : 0;   // '=' if present, el
 
 let atlasBase, tileWd, tileHd;
 function buildAtlas() {
+  if (!ctx) return;                 // GPU mode builds its own coverage atlas; skip the 2D LUT atlas
   tileWd = Math.max(1, Math.ceil(cellW * dpr));
   tileHd = Math.max(1, Math.ceil(cellH * dpr));
-  const fontDev = `${CONFIG.fontSize * dpr}px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace`;
+  const fontDev = `${CONFIG.fontSize * CONFIG.zoom * dpr}px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace`;
   atlasBase = document.createElement("canvas");
   atlasBase.width = atlasChars.length * tileWd;
   atlasBase.height = (CONFIG.levels + 1) * tileHd;
@@ -435,16 +447,17 @@ function buildAtlas() {
   }
 }
 
-function resize() {
+function resize2D() {
   dpr = Math.min(window.devicePixelRatio || 1, CONFIG.maxDPR);
   W = window.innerWidth; H = window.innerHeight;
   canvas.width = Math.round(W * dpr);
   canvas.height = Math.round(H * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.font = `${CONFIG.fontSize}px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace`;
+  const fs = CONFIG.fontSize * CONFIG.zoom;           // zoom scales glyph size
+  ctx.font = `${fs}px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace`;
   ctx.textBaseline = "top";
-  cellW = ctx.measureText("M").width || CONFIG.fontSize * 0.6;
-  cellH = CONFIG.fontSize * CONFIG.lineHeight;
+  cellW = ctx.measureText("M").width || fs * 0.6;
+  cellH = fs * CONFIG.lineHeight;
   cols = Math.ceil(W / cellW) + 1;
   rows = Math.ceil(H / cellH) + 1;
   density = new Float32Array(cols * rows);
@@ -459,7 +472,7 @@ function recomputeWorldTransform() {
   originX = W * 0.5;
   originY = H * 0.5;
 }
-window.addEventListener("resize", resize);
+window.addEventListener("resize", () => activeRenderer && activeRenderer.resize());
 
 // Pointer nudges the constants (eased). Ignore moves that start on the UI panels.
 let mxN = 0, myN = 0, pxN = 0, pyN = 0;
@@ -670,11 +683,25 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-// Seed everything, then start.
-burnInPainter();
-resize();
-requestAnimationFrame(frame);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) { lastT = performance.now(); requestAnimationFrame(frame); } });
+// ---- Canvas2D renderer as a selectable module (the fallback path) ----
+// Wraps the existing 2D pipeline behind the same interface the GPU renderer exposes,
+// so boot() can pick either one and the shared UI can drive whichever is active.
+const R2D = {
+  mode: "canvas2d",
+  init() { ctx = canvas.getContext("2d", { alpha: false }); },
+  start() { burnInPainter(); this.resize(); requestAnimationFrame(frame); },
+  resize() { resize2D(); },
+  paletteChanged() { buildLUT(); buildAtlas(); },
+  constantsChanged() { resetProbe(); burnInPainter(); },
+  reseedAll() { buildLUT(); buildAtlas(); resetProbe(); burnInPainter(); recomputeWorldTransform(); },
+};
+
+// activeRenderer is set by boot(); the shared UI calls its hooks. GPU renderer added below.
+let activeRenderer = R2D;
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && activeRenderer === R2D) { lastT = performance.now(); requestAnimationFrame(frame); }
+});
 
 // ---- Telemetry ----
 const $ = id => document.getElementById(id);
@@ -721,6 +748,14 @@ const CONTROLS = [
   { k: "bgScale",     label: "Flow scale",   min: 0.02, max: 0.25, step: 0.005 },
   { k: "bgFlow",      label: "Flow speed",   min: 0,   max: 0.6, step: 0.01 },
   { k: "bgContrast",  label: "Contrast",     min: 0.6, max: 3,   step: 0.1 },
+  { g: "Swirl (WebGPU)" },
+  { k: "swirl",       label: "Twist",        min: 0,   max: 6,   step: 0.05 },
+  { k: "swirlPower",  label: "Twist falloff",min: 0.1, max: 1.5, step: 0.05 },
+  { k: "speed",       label: "Glyph swirl",  min: 0,   max: 1,   step: 0.01 },
+  { k: "bgSpeed",     label: "Bg swirl",     min: 0,   max: 1,   step: 0.01 },
+  { g: "Glow (WebGPU)" },
+  { k: "bloom",       label: "Bloom",        min: 0,   max: 3,   step: 0.05 },
+  { k: "bloomThresh", label: "Bloom thresh", min: 0,   max: 1.5, step: 0.05 },
 ];
 
 const DEFAULTS = JSON.parse(JSON.stringify(CONFIG));   // deep snapshot for Reset
@@ -758,7 +793,7 @@ function buildControlPanel() {
       CONFIG[cc.k] = v;
       input.value = v;                               // move the thumb (snaps visually to step)
       show();
-      if (cc.k === "a" || cc.k === "b" || cc.k === "c" || cc.k === "d") resetProbe();
+      if (cc.k === "a" || cc.k === "b" || cc.k === "c" || cc.k === "d") activeRenderer.constantsChanged();
     };
     input.addEventListener("input", () => apply(parseFloat(input.value)));
     valEl.addEventListener("focus", () => valEl.select());     // click selects all -> type replaces
@@ -784,7 +819,7 @@ let activePalette = "Aqua";
 function applyPalette(name) {
   CONFIG.palette = PALETTES[name].map(cc => cc.slice());
   activePalette = name;
-  buildLUT(); buildAtlas();
+  activeRenderer.paletteChanged();
   document.querySelectorAll(".pal-btn[data-pal]").forEach(bt => bt.classList.toggle("active", bt.dataset.pal === name));
 }
 (function buildPaletteRow() {
@@ -803,7 +838,7 @@ function applyAttrPreset(name) {
   const p = ATTR_PRESETS[name];
   CONFIG.a = p[0]; CONFIG.b = p[1]; CONFIG.c = p[2]; CONFIG.d = p[3];
   aCur = p[0]; bCur = p[1]; cCur = p[2]; dCur = p[3];
-  refreshSliders(); resetProbe(); burnInPainter();
+  refreshSliders(); activeRenderer.constantsChanged();
   document.querySelectorAll(".attr-btn").forEach(bt => bt.classList.toggle("active", bt.dataset.attr === name));
 }
 (function buildAttrRow() {
@@ -828,14 +863,13 @@ $("randomBtn").addEventListener("click", () => {
   aCur = CONFIG.a; bCur = CONFIG.b; cCur = CONFIG.c; dCur = CONFIG.d;
   const names = Object.keys(PALETTES);
   applyPalette(names[(Math.random() * names.length) | 0]);
-  refreshSliders(); resetProbe(); burnInPainter();
+  refreshSliders(); activeRenderer.constantsChanged();
   document.querySelectorAll(".attr-btn").forEach(bt => bt.classList.remove("active"));
 });
 $("resetBtn").addEventListener("click", () => {
   Object.assign(CONFIG, JSON.parse(JSON.stringify(DEFAULTS)));
   aCur = CONFIG.a; bCur = CONFIG.b; cCur = CONFIG.c; dCur = CONFIG.d;
-  buildLUT(); buildAtlas(); refreshSliders(); resetProbe(); burnInPainter();
-  recomputeWorldTransform();
+  refreshSliders(); activeRenderer.reseedAll(); activeRenderer.resize();   // re-lay-out (restores zoom 100%)
   document.querySelectorAll(".pal-btn[data-pal]").forEach(bt => bt.classList.toggle("active", bt.dataset.pal === "Aqua"));
   document.querySelectorAll(".attr-btn").forEach(bt => bt.classList.toggle("active", bt.dataset.attr === "Classic"));
   activePalette = "Aqua";
@@ -885,6 +919,796 @@ document.addEventListener("keydown", e => {
   if (controls.classList.contains("open")) { setControls(false); return; }
   if (sidebar.classList.contains("open")) { setSidebar(false); return; }
 });
+
+// ---- Zoom: Ctrl +/- (and Ctrl+0 to reset) or Ctrl+wheel, like browser zoom. Scales the whole
+//      ASCII scene (glyph size + attractor) uniformly. We preventDefault so the *browser* doesn't
+//      zoom instead. Zoom re-lays-out the grid but keeps the particles, so the attractor persists. ----
+const ZOOM_MIN = 0.4, ZOOM_MAX = 3.0;
+const hintEl = document.querySelector(".hint");
+let hintTimer = 0;
+function setZoom(z) {
+  z = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+  if (Math.abs(z - CONFIG.zoom) < 1e-4) return;
+  CONFIG.zoom = z;
+  activeRenderer.resize();
+  if (hintEl) {
+    hintEl.textContent = `zoom ${Math.round(z * 100)}%`;
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => { hintEl.textContent = "Ctrl +/- to zoom · press H to hide UI"; }, 900);
+  }
+}
+window.addEventListener("keydown", e => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  if (e.key === "=" || e.key === "+") { e.preventDefault(); setZoom(CONFIG.zoom * 1.15); }
+  else if (e.key === "-" || e.key === "_") { e.preventDefault(); setZoom(CONFIG.zoom / 1.15); }
+  else if (e.key === "0") { e.preventDefault(); setZoom(1); }
+});
+window.addEventListener("wheel", e => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  e.preventDefault();
+  setZoom(CONFIG.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+}, { passive: false });
+
+/* ============================================================================
+   WEBGPU RENDERER (RGPU) — the dense, glowing path.
+   Pipeline per frame:
+     compute orbit  : N persistent de Jong particles, K steps each, atomicAdd into a
+                      visit grid (millions of iterations/frame vs ~22k on the CPU).
+     compute field  : field = field*decay + visits; reset visits; atomicMax -> maxBuf.
+     compute resolve : relax the smoothed dMax (drives the log tone-map) from maxBuf.
+     render glyphs  : one instanced quad per cell, glyph coverage * palette(brightness),
+                      additively blended into an rgba16float HDR target.
+     render composite: tone-map the HDR target over the deep-water base -> swapchain.
+   Code sky + bloom are layered on in later stages. renderOnce() is rAF-independent so
+   it can be driven synchronously (headless verification / frozen-tab environments).
+   ============================================================================ */
+const PARAMS_WGSL = `
+struct Params {
+  a:f32, b:f32, c:f32, d:f32,
+  cols:f32, rows:f32, particleCount:f32, steps:f32,
+  originXd:f32, originYd:f32, worldScaled:f32, cellWd:f32,
+  cellHd:f32, decay:f32, threshold:f32, webCap:f32,
+  scrollTx:f32, codeW:f32, codeH:f32, fallbackCol:f32,
+  atlasCols:f32, resW:f32, resH:f32, glyphGain:f32,
+  compExposure:f32, exposure:f32, time:f32, skyGlow:f32,
+  bgScale:f32, bgFlow:f32, bgScroll:f32, bgContrast:f32,
+  swirl:f32, swirlPow:f32, bloomStrength:f32, bloomThreshold:f32,
+  bloomW:f32, bloomH:f32, swirlSpeed:f32, bgSpeed:f32,
+};`;
+
+// Shared noise + flow-warp prelude (used by the sky and the web).
+const NOISE_WGSL = `
+fn vhash(ix:i32, iy:i32, iz:i32) -> f32 {
+  var n:u32 = u32(ix)*374761393u + u32(iy)*668265263u + u32(iz)*1274126177u;
+  n = n ^ (n >> 13u); n = n * 1274126177u; return f32(n & 0xffffffu) / f32(0x1000000u);
+}
+fn smooth3(t:f32) -> f32 { return t*t*(3.0-2.0*t); }
+fn valueNoise(x:f32, y:f32, z:f32) -> f32 {
+  let xi=i32(floor(x)); let yi=i32(floor(y)); let zi=i32(floor(z));
+  let xf=smooth3(x-floor(x)); let yf=smooth3(y-floor(y)); let zf=smooth3(z-floor(z));
+  let c000=vhash(xi,yi,zi); let c100=vhash(xi+1,yi,zi);
+  let c010=vhash(xi,yi+1,zi); let c110=vhash(xi+1,yi+1,zi);
+  let c001=vhash(xi,yi,zi+1); let c101=vhash(xi+1,yi,zi+1);
+  let c011=vhash(xi,yi+1,zi+1); let c111=vhash(xi+1,yi+1,zi+1);
+  let x00=mix(c000,c100,xf); let x10=mix(c010,c110,xf);
+  let x01=mix(c001,c101,xf); let x11=mix(c011,c111,xf);
+  return mix(mix(x00,x10,yf), mix(x01,x11,yf), zf);
+}
+fn fbm3(x:f32, y:f32, z:f32) -> f32 {
+  var s=0.0; var a=0.5; var f=1.0; var n=0.0;
+  for (var o=0; o<3; o=o+1) { s+=a*valueNoise(x*f,y*f,z*f); n+=a; a*=0.5; f*=2.0; }
+  return s/n;
+}
+// Inverse-mapped swirl (the reference's core motion). For a screen cell (gx,gy), return the
+// SWIRLED normalised position to sample the source text from: the angle is twisted by
+// swirl * radius^swirlPow * time, so the whole field rotates with a distance-dependent shear
+// into spiral arms — and because it's inverse-mapped it stays fully packed (no holes).
+fn swirlPos(gx:f32, gy:f32, cols:f32, rows:f32, asp:f32, swirl:f32, swirlPow:f32, ts:f32) -> vec2<f32> {
+  let nx = (gx / cols - 0.5) * asp;
+  let ny = (gy / rows - 0.5);
+  let dist = sqrt(nx*nx + ny*ny);
+  let ang = atan2(ny, nx) + swirl * pow(dist, swirlPow) * ts;
+  return vec2<f32>(cos(ang) * dist, sin(ang) * dist);   // (su, sv) in normalised space
+}
+`;
+
+const WGSL_ORBIT = PARAMS_WGSL + `
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var<storage, read_write> states: array<vec2<f32>>;
+@group(0) @binding(2) var<storage, read_write> visits: array<atomic<u32>>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= u32(P.particleCount)) { return; }
+  var p = states[i];
+  let a = P.a; let b = P.b; let c = P.c; let d = P.d;
+  let cols = i32(P.cols); let rows = i32(P.rows);
+  let steps = u32(P.steps);
+  for (var s = 0u; s < steps; s = s + 1u) {
+    let nx = sin(a * p.y) - cos(b * p.x);
+    let ny = sin(c * p.x) - cos(d * p.y);
+    p = vec2<f32>(nx, ny);
+    let sx = P.originXd + nx * P.worldScaled;
+    let sy = P.originYd - ny * P.worldScaled;
+    let gx = i32(floor(sx / P.cellWd));
+    let gy = i32(floor(sy / P.cellHd));
+    if (gx >= 0 && gx < cols && gy >= 0 && gy < rows) {
+      atomicAdd(&visits[u32(gy * cols + gx)], 1u);
+    }
+  }
+  states[i] = p;
+}`;
+
+const WGSL_FIELD = PARAMS_WGSL + `
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var<storage, read_write> visits: array<atomic<u32>>;
+@group(0) @binding(2) var<storage, read_write> field: array<f32>;
+@group(0) @binding(3) var<storage, read_write> maxBuf: atomic<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  let n = u32(P.cols) * u32(P.rows);
+  if (i >= n) { return; }
+  let v = f32(atomicExchange(&visits[i], 0u));
+  let nv = field[i] * P.decay + v;
+  field[i] = nv;
+  atomicMax(&maxBuf, bitcast<u32>(nv));   // nv >= 0, so bit order matches value order
+}`;
+
+const WGSL_RESOLVE = `
+@group(0) @binding(0) var<storage, read_write> maxBuf: atomic<u32>;
+@group(0) @binding(1) var<storage, read_write> dmax: array<f32>;
+@compute @workgroup_size(1)
+fn main() {
+  let fm = bitcast<f32>(atomicLoad(&maxBuf));
+  let tgt = max(fm, dmax[0] * 0.5);
+  var dm = dmax[0] + (tgt - dmax[0]) * 0.05;
+  if (dm < 1.0) { dm = 1.0; }
+  dmax[0] = dm;
+  atomicStore(&maxBuf, 0u);
+}`;
+
+const WGSL_GLYPH = PARAMS_WGSL + NOISE_WGSL + `
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var<storage, read> field: array<f32>;
+@group(0) @binding(2) var<storage, read> dmax: array<f32>;
+@group(0) @binding(3) var codeTex: texture_2d<u32>;
+@group(0) @binding(4) var atlasTex: texture_2d<f32>;
+@group(0) @binding(5) var paletteTex: texture_2d<f32>;
+@group(0) @binding(6) var samp: sampler;
+
+struct VOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+  @location(1) @interpolate(flat) intensity: f32,
+};
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) inst: u32) -> VOut {
+  var out: VOut;
+  let cols = u32(P.cols);
+  let gx = inst % cols;
+  let gy = inst / cols;
+  let dv = field[inst];
+  let denom = log(1.0 + dmax[0] * P.exposure);
+  var bright = 0.0;
+  if (denom > 0.0) { bright = log(1.0 + dv * P.exposure) / denom; }
+  if (dv <= 0.0 || bright < P.threshold) {
+    out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);   // degenerate -> clipped
+    out.uv = vec2<f32>(0.0, 0.0);
+    out.intensity = 0.0;
+    return out;
+  }
+  // glyph identity swirls (inverse-mapped): the attractor's code flows/animates in place while
+  // its shape (grid position) and brightness (density tone-map) stay unchanged.
+  let asp = P.resW / P.resH;
+  let ts = P.time * P.swirlSpeed;
+  let sw = swirlPos(f32(gx), f32(gy), P.cols, P.rows, asp, P.swirl, P.swirlPow, ts);
+  let tx = i32(floor((sw.x / asp + 0.5) * P.cols));
+  let ty = i32(floor((sw.y + 0.5) * P.rows));
+  let mw = i32(P.codeW); let mh = i32(P.codeH);
+  var wx = tx % mw; if (wx < 0) { wx = wx + mw; }
+  var wy = ty % mh; if (wy < 0) { wy = wy + mh; }
+  let raw = textureLoad(codeTex, vec2<i32>(wx, wy), 0).r;
+  var glyphCol = raw;
+  if (raw == 0xffffffffu) { glyphCol = u32(P.fallbackCol); }
+  var corners = array<vec2<f32>, 6>(
+    vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
+    vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0));
+  let cxy = corners[vi];
+  let px = (f32(gx) + cxy.x) * P.cellWd;
+  let py = (f32(gy) + cxy.y) * P.cellHd;
+  out.pos = vec4<f32>(px / P.resW * 2.0 - 1.0, 1.0 - py / P.resH * 2.0, 0.0, 1.0);
+  out.uv = vec2<f32>((f32(glyphCol) + cxy.x) / P.atlasCols, cxy.y);
+  out.intensity = min(bright * P.webCap, 1.0);
+  return out;
+}
+
+@fragment
+fn fs(in: VOut) -> @location(0) vec4<f32> {
+  let cov = textureSample(atlasTex, samp, in.uv).r;
+  let pcol = textureSample(paletteTex, samp, vec2<f32>(clamp(in.intensity, 0.0, 1.0), 0.5)).rgb;
+  let hdr = pcol * (in.intensity * P.glyphGain) * cov;
+  return vec4<f32>(hdr, cov);
+}`;
+
+const FULLSCREEN_VS = `
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
+  var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  return vec4<f32>(p[vi], 0.0, 1.0);
+}`;
+
+// Bright-pass: downsample the HDR target, keeping only what's above a soft threshold -> bloom seed.
+const WGSL_BRIGHT = PARAMS_WGSL + `
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var hdrTex: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+` + FULLSCREEN_VS + `
+@fragment
+fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
+  let uv = vec2<f32>(fc.x / P.bloomW, fc.y / P.bloomH);
+  let c = textureSampleLevel(hdrTex, samp, uv, 0.0).rgb;
+  let l = max(max(c.r, c.g), c.b);
+  let knee = smoothstep(P.bloomThreshold, P.bloomThreshold + 0.5, l);
+  return vec4<f32>(c * knee, 1.0);
+}`;
+
+// Separable Gaussian blur (fsH / fsV) at bloom resolution.
+const WGSL_BLUR = PARAMS_WGSL + `
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var src: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+` + FULLSCREEN_VS + `
+fn blur(uv: vec2<f32>, dir: vec2<f32>) -> vec3<f32> {
+  var w = array<f32, 5>(0.227027, 0.194594, 0.121622, 0.054054, 0.016216);
+  var sum = textureSampleLevel(src, samp, uv, 0.0).rgb * w[0];
+  for (var i = 1; i < 5; i = i + 1) {
+    let o = dir * f32(i) * 1.6;
+    sum += textureSampleLevel(src, samp, uv + o, 0.0).rgb * w[i];
+    sum += textureSampleLevel(src, samp, uv - o, 0.0).rgb * w[i];
+  }
+  return sum;
+}
+@fragment fn fsH(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
+  return vec4<f32>(blur(vec2<f32>(fc.x / P.bloomW, fc.y / P.bloomH), vec2<f32>(1.0 / P.bloomW, 0.0)), 1.0);
+}
+@fragment fn fsV(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
+  return vec4<f32>(blur(vec2<f32>(fc.x / P.bloomW, fc.y / P.bloomH), vec2<f32>(0.0, 1.0 / P.bloomH)), 1.0);
+}`;
+
+const WGSL_COMPOSITE = PARAMS_WGSL + `
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var hdrTex: texture_2d<f32>;
+@group(0) @binding(2) var bloomTex: texture_2d<f32>;
+@group(0) @binding(3) var samp: sampler;
+` + FULLSCREEN_VS + `
+@fragment
+fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
+  let hdr = textureLoad(hdrTex, vec2<i32>(i32(fc.x), i32(fc.y)), 0).rgb;
+  let bloom = textureSampleLevel(bloomTex, samp, vec2<f32>(fc.x / P.resW, fc.y / P.resH), 0.0).rgb;
+  let combined = hdr + bloom * P.bloomStrength;
+  let mapped = vec3<f32>(1.0) - exp(-combined * P.compExposure);
+  let base = vec3<f32>(5.0 / 255.0, 10.0 / 255.0, 16.0 / 255.0);
+  return vec4<f32>(base + mapped, 1.0);
+}`;
+
+const WGSL_SKY = PARAMS_WGSL + NOISE_WGSL + `
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var codeTex: texture_2d<u32>;
+@group(0) @binding(2) var atlasTex: texture_2d<f32>;
+@group(0) @binding(3) var paletteTex: texture_2d<f32>;
+@group(0) @binding(4) var samp: sampler;
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
+  var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  return vec4<f32>(p[vi], 0.0, 1.0);
+}
+@fragment
+fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
+  let glow = P.skyGlow;
+  if (glow <= 0.001) { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+  let asp = P.resW / P.resH;
+  let ts = P.time * P.bgSpeed;                 // background swirl runs on its own (slower) clock
+
+  // discrete swirling glyph field (the reference's inverse-mapped swirl)
+  let cellx = floor(fc.x / P.cellWd);
+  let celly = floor(fc.y / P.cellHd);
+  let lx = fract(fc.x / P.cellWd);
+  let ly = fract(fc.y / P.cellHd);
+  let sw = swirlPos(cellx, celly, P.cols, P.rows, asp, P.swirl, P.swirlPow, ts);
+  let su = sw.x; let sv = sw.y;
+  let tx = i32(floor((su / asp + 0.5) * P.cols));
+  let ty = i32(floor((sv + 0.5) * P.rows));
+  let mw = i32(P.codeW); let mh = i32(P.codeH);
+  var wx = tx % mw; if (wx < 0) { wx = wx + mw; }
+  var wy = ty % mh; if (wy < 0) { wy = wy + mh; }
+  let raw = textureLoad(codeTex, vec2<i32>(wx, wy), 0).r;
+  if (raw == 0xffffffffu) { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }   // spaces -> gaps
+
+  // brightness: ambient fBm sampled at the SWIRLED coord (same contrast as now, Aqua palette)
+  let v = fbm3(su * 2.4 + 100.0, sv * 2.4 + 100.0, ts * P.bgFlow);
+  let amb = 0.03 + (0.17 - 0.03) * pow(v, P.bgContrast);
+  let b = min(amb * glow, 0.42);
+  let cov = textureSampleLevel(atlasTex, samp, vec2<f32>((f32(raw) + lx) / P.atlasCols, ly), 0.0).r;
+  let pcol = textureSampleLevel(paletteTex, samp, vec2<f32>(clamp(b * 2.0, 0.0, 1.0), 0.5), 0.0).rgb;
+  return vec4<f32>(pcol * cov * b * 4.0, cov);
+}`;
+
+const RGPU = {
+  mode: "webgpu",
+  device: null, gctx: null, format: null,
+  particleCount: 1 << 16, steps: 48, glyphGain: 2.2, compExposure: 1.4,
+  params: new Float32Array(40),   // uniform struct is 36 f32 (144 B); pad to 160 B
+  _running: false, _reseed: false, _lastReadT: 0,
+
+  async init(gpu) {
+    this.device = gpu.device;
+    const device = this.device;
+    device.addEventListener("uncapturederror", e => console.error("[webgpu] uncaptured:", e.error.message));
+    // Capture any validation error during setup so boot() can fall back to Canvas2D
+    // instead of leaving a black screen (the CLAUDE.md fallback requirement).
+    device.pushErrorScope("validation");
+    this.format = navigator.gpu.getPreferredCanvasFormat();
+    this.gctx = canvas.getContext("webgpu");
+    this.gctx.configure({ device, format: this.format, alphaMode: "opaque",
+                          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+
+    // --- static buffers ---
+    this.paramsBuf = device.createBuffer({ size: 160, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.statesBuf = device.createBuffer({ size: this.particleCount * 2 * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    this.maxBuf    = device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    this.dmaxBuf   = device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+
+    this.sampler = device.createSampler({ magFilter: "linear", minFilter: "linear", addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge" });
+    this.repeatSampler = device.createSampler({ magFilter: "linear", minFilter: "linear", mipmapFilter: "linear", addressModeU: "repeat", addressModeV: "repeat" });
+
+    // --- code texture (source glyph columns), static ---
+    this._buildCodeTexture();
+    // --- continuous code-field texture (for the smoothly-warping sky), static ---
+    this._buildCodeFieldTexture();
+    // --- palette texture ---
+    this._buildPaletteTexture();
+
+    // --- pipelines ---
+    const mkCompute = (code, entry = "main") =>
+      device.createComputePipeline({ layout: "auto", compute: { module: device.createShaderModule({ code }), entryPoint: entry } });
+    this.pOrbit   = mkCompute(WGSL_ORBIT);
+    this.pField   = mkCompute(WGSL_FIELD);
+    this.pResolve = mkCompute(WGSL_RESOLVE);
+
+    const glyphMod = device.createShaderModule({ code: WGSL_GLYPH });
+    this.pGlyph = device.createRenderPipeline({
+      layout: "auto",
+      vertex: { module: glyphMod, entryPoint: "vs" },
+      fragment: { module: glyphMod, entryPoint: "fs", targets: [{
+        format: "rgba16float",
+        blend: { color: { srcFactor: "one", dstFactor: "one", operation: "add" },
+                 alpha: { srcFactor: "one", dstFactor: "one", operation: "add" } },
+      }] },
+      primitive: { topology: "triangle-list" },
+    });
+
+    const skyMod = device.createShaderModule({ code: WGSL_SKY });
+    this.pSky = device.createRenderPipeline({
+      layout: "auto",
+      vertex: { module: skyMod, entryPoint: "vs" },
+      fragment: { module: skyMod, entryPoint: "fs", targets: [{ format: "rgba16float" }] },
+      primitive: { topology: "triangle-list" },
+    });
+
+    const hdrTarget = { format: "rgba16float" };
+    const brightMod = device.createShaderModule({ code: WGSL_BRIGHT });
+    this.pBright = device.createRenderPipeline({ layout: "auto",
+      vertex: { module: brightMod, entryPoint: "vs" },
+      fragment: { module: brightMod, entryPoint: "fs", targets: [hdrTarget] }, primitive: { topology: "triangle-list" } });
+    const blurMod = device.createShaderModule({ code: WGSL_BLUR });
+    this.pBlurH = device.createRenderPipeline({ layout: "auto",
+      vertex: { module: blurMod, entryPoint: "vs" },
+      fragment: { module: blurMod, entryPoint: "fsH", targets: [hdrTarget] }, primitive: { topology: "triangle-list" } });
+    this.pBlurV = device.createRenderPipeline({ layout: "auto",
+      vertex: { module: blurMod, entryPoint: "vs" },
+      fragment: { module: blurMod, entryPoint: "fsV", targets: [hdrTarget] }, primitive: { topology: "triangle-list" } });
+
+    const compMod = device.createShaderModule({ code: WGSL_COMPOSITE });
+    this.pComposite = device.createRenderPipeline({
+      layout: "auto",
+      vertex: { module: compMod, entryPoint: "vs" },
+      fragment: { module: compMod, entryPoint: "fs", targets: [{ format: this.format }] },
+      primitive: { topology: "triangle-list" },
+    });
+
+    this.resize();
+
+    const err = await device.popErrorScope();
+    if (err) throw new Error("WebGPU setup failed: " + err.message);
+  },
+
+  _buildCodeTexture() {
+    const device = this.device;
+    let maxLen = 1;
+    for (const arr of LINE_CODES) maxLen = Math.max(maxLen, arr.length);
+    this.codeW = maxLen; this.codeH = LINE_CODES.length;
+    const data = new Uint32Array(this.codeW * this.codeH);
+    for (let y = 0; y < this.codeH; y++) {
+      const arr = LINE_CODES[y], len = arr.length;
+      for (let x = 0; x < this.codeW; x++) {
+        const code = arr[x % len];
+        const col = (code === 32) ? -1 : charCol[code];
+        data[y * this.codeW + x] = col < 0 ? 0xffffffff : (col >>> 0);
+      }
+    }
+    this.codeTex = device.createTexture({ size: [this.codeW, this.codeH], format: "r32uint",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    // r32uint: 4 bytes/texel; bytesPerRow must be a multiple of 256 -> pad rows.
+    const bpr = Math.ceil(this.codeW * 4 / 256) * 256;
+    const padded = new Uint8Array(bpr * this.codeH);
+    const view = new DataView(padded.buffer);
+    for (let y = 0; y < this.codeH; y++)
+      for (let x = 0; x < this.codeW; x++)
+        view.setUint32(y * bpr + x * 4, data[y * this.codeW + x], true);
+    device.queue.writeTexture({ texture: this.codeTex }, padded,
+      { bytesPerRow: bpr, rowsPerImage: this.codeH }, [this.codeW, this.codeH]);
+  },
+
+  _buildCodeFieldTexture() {
+    // Render the SOURCE lines into a continuous luminance texture. The sky samples this
+    // at warped UVs with linear filtering + repeat wrapping, so the letterforms stretch and
+    // bend smoothly (like the lensed reference) instead of snapping to a cell grid.
+    const device = this.device;
+    const cols = this.codeW, rows = this.codeH;   // glyph counts (from _buildCodeTexture)
+    const charW = 8, charH = 16;                  // texture cell — aspect matches the screen cell (~0.5)
+    const w = cols * charW, h = rows * charH;
+    const cvs = document.createElement("canvas"); cvs.width = w; cvs.height = h;
+    const a = cvs.getContext("2d");
+    a.fillStyle = "#000"; a.fillRect(0, 0, w, h);
+    a.fillStyle = "#fff"; a.textBaseline = "middle"; a.textAlign = "center";
+    a.font = `${charH - 3}px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace`;
+    for (let y = 0; y < rows; y++) {
+      const arr = LINE_CODES[y], len = arr.length;
+      for (let x = 0; x < cols; x++)
+        a.fillText(String.fromCharCode(arr[x % len]), x * charW + charW / 2, y * charH + charH / 2);
+    }
+    const img = a.getImageData(0, 0, w, h).data;
+    const bpr = Math.ceil(w / 256) * 256;
+    const r8 = new Uint8Array(bpr * h);
+    for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) r8[yy * bpr + xx] = img[(yy * w + xx) * 4];
+    this.codeFieldTex = device.createTexture({ size: [w, h], format: "r8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    device.queue.writeTexture({ texture: this.codeFieldTex }, r8, { bytesPerRow: bpr, rowsPerImage: h }, [w, h]);
+  },
+
+  _buildPaletteTexture() {
+    const device = this.device;
+    if (!this.paletteTex)
+      this.paletteTex = device.createTexture({ size: [256, 1], format: "rgba8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    const stops = CONFIG.palette, segs = stops.length - 1;
+    const px = new Uint8Array(256 * 4);
+    for (let i = 0; i < 256; i++) {
+      const t = i / 255, s = Math.min(segs - 1, Math.floor(t * segs)), lt = t * segs - s;
+      const A = stops[s], B = stops[s + 1];
+      px[i * 4]     = Math.round(A[0] + (B[0] - A[0]) * lt);
+      px[i * 4 + 1] = Math.round(A[1] + (B[1] - A[1]) * lt);
+      px[i * 4 + 2] = Math.round(A[2] + (B[2] - A[2]) * lt);
+      px[i * 4 + 3] = 255;
+    }
+    device.queue.writeTexture({ texture: this.paletteTex }, px, { bytesPerRow: 256 * 4, rowsPerImage: 1 }, [256, 1]);
+    if (this.field) this._buildGlyphBindGroup();   // palette view feeds the glyph bind group
+  },
+
+  _buildGlyphAtlas() {
+    const device = this.device;
+    this.tileW = Math.max(1, Math.ceil(cellW * dpr));
+    this.tileH = Math.max(1, Math.ceil(cellH * dpr));
+    const w = atlasChars.length * this.tileW, h = this.tileH;
+    const cvs = document.createElement("canvas"); cvs.width = w; cvs.height = h;
+    const a = cvs.getContext("2d");
+    a.clearRect(0, 0, w, h);
+    a.fillStyle = "#fff"; a.textBaseline = "top";
+    a.font = `${CONFIG.fontSize * CONFIG.zoom * dpr}px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace`;
+    for (let i = 0; i < atlasChars.length; i++) a.fillText(String.fromCharCode(atlasChars[i]), i * this.tileW, 0);
+    const img = a.getImageData(0, 0, w, h).data;
+    // coverage = alpha, packed into r8unorm with 256-aligned rows
+    const bpr = Math.ceil(w / 256) * 256;
+    const cov = new Uint8Array(bpr * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) cov[y * bpr + x] = img[(y * w + x) * 4 + 3];
+    if (this.atlasTex) this.atlasTex.destroy();
+    this.atlasTex = device.createTexture({ size: [w, h], format: "r8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    device.queue.writeTexture({ texture: this.atlasTex }, cov, { bytesPerRow: bpr, rowsPerImage: h }, [w, h]);
+  },
+
+  resize() {
+    const device = this.device;
+    dpr = Math.min(window.devicePixelRatio || 1, CONFIG.maxDPR);
+    W = window.innerWidth || 1280; H = window.innerHeight || 720;   // guard pre-layout 0-size
+    canvas.width = Math.max(1, Math.round(W * dpr));
+    canvas.height = Math.max(1, Math.round(H * dpr));
+    // measure cell metrics with a throwaway 2D context (main canvas is a webgpu context).
+    // CONFIG.zoom scales the glyph size — bigger glyphs / fewer cells when zoomed in.
+    const fs = CONFIG.fontSize * CONFIG.zoom;
+    const m = document.createElement("canvas").getContext("2d");
+    m.font = `${fs}px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace`;
+    cellW = m.measureText("M").width || fs * 0.6;
+    cellH = fs * CONFIG.lineHeight;
+    cols = Math.ceil(W / cellW) + 1;
+    rows = Math.ceil(H / cellH) + 1;
+    recomputeWorldTransform();
+
+    const nCells = cols * rows;
+    if (this.field) this.field.destroy();
+    if (this.visits) this.visits.destroy();
+    this.field  = device.createBuffer({ size: nCells * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+    this.visits = device.createBuffer({ size: nCells * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(this.field, 0, new Float32Array(nCells));
+    device.queue.writeBuffer(this.visits, 0, new Uint32Array(nCells));
+    device.queue.writeBuffer(this.maxBuf, 0, new Uint32Array([0]));
+    device.queue.writeBuffer(this.dmaxBuf, 0, new Float32Array([1]));
+
+    if (this.hdrTex) this.hdrTex.destroy();
+    this.hdrTex = device.createTexture({ size: [canvas.width, canvas.height], format: "rgba16float",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+
+    // half-resolution bloom ping-pong targets
+    this.bloomW = Math.max(1, (canvas.width / 2) | 0);
+    this.bloomH = Math.max(1, (canvas.height / 2) | 0);
+    if (this.bloomA) this.bloomA.destroy();
+    if (this.bloomB) this.bloomB.destroy();
+    const bloomUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
+    this.bloomA = device.createTexture({ size: [this.bloomW, this.bloomH], format: "rgba16float", usage: bloomUsage });
+    this.bloomB = device.createTexture({ size: [this.bloomW, this.bloomH], format: "rgba16float", usage: bloomUsage });
+    // Cache views once so renderOnce doesn't allocate a new view object every frame (GC hitches).
+    this.hdrView = this.hdrTex.createView();
+    this.bloomAView = this.bloomA.createView();
+    this.bloomBView = this.bloomB.createView();
+
+    this._buildGlyphAtlas();
+    if (!this._seeded) { this._seedParticles(); this._seeded = true; }   // seed once; zoom/resize keeps particles
+
+    // bind groups (depend on the freshly (re)created buffers/textures)
+    this.bgOrbit = device.createBindGroup({ layout: this.pOrbit.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: this.paramsBuf } },
+      { binding: 1, resource: { buffer: this.statesBuf } },
+      { binding: 2, resource: { buffer: this.visits } }] });
+    this.bgField = device.createBindGroup({ layout: this.pField.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: this.paramsBuf } },
+      { binding: 1, resource: { buffer: this.visits } },
+      { binding: 2, resource: { buffer: this.field } },
+      { binding: 3, resource: { buffer: this.maxBuf } }] });
+    this.bgResolve = device.createBindGroup({ layout: this.pResolve.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: this.maxBuf } },
+      { binding: 1, resource: { buffer: this.dmaxBuf } }] });
+    this.bgBright = device.createBindGroup({ layout: this.pBright.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: this.paramsBuf } },
+      { binding: 1, resource: this.hdrTex.createView() },
+      { binding: 2, resource: this.sampler }] });
+    this.bgBlurH = device.createBindGroup({ layout: this.pBlurH.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: this.paramsBuf } },
+      { binding: 1, resource: this.bloomA.createView() },
+      { binding: 2, resource: this.sampler }] });
+    this.bgBlurV = device.createBindGroup({ layout: this.pBlurV.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: this.paramsBuf } },
+      { binding: 1, resource: this.bloomB.createView() },
+      { binding: 2, resource: this.sampler }] });
+    this.bgComposite = device.createBindGroup({ layout: this.pComposite.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: this.paramsBuf } },
+      { binding: 1, resource: this.hdrTex.createView() },
+      { binding: 2, resource: this.bloomA.createView() },
+      { binding: 3, resource: this.sampler }] });
+    this._buildGlyphBindGroup();
+  },
+
+  _buildGlyphBindGroup() {
+    this.bgGlyph = this.device.createBindGroup({ layout: this.pGlyph.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: this.paramsBuf } },
+      { binding: 1, resource: { buffer: this.field } },
+      { binding: 2, resource: { buffer: this.dmaxBuf } },
+      { binding: 3, resource: this.codeTex.createView() },
+      { binding: 4, resource: this.atlasTex.createView() },
+      { binding: 5, resource: this.paletteTex.createView() },
+      { binding: 6, resource: this.sampler }] });
+    this.bgSky = this.device.createBindGroup({ layout: this.pSky.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: this.paramsBuf } },
+      { binding: 1, resource: this.codeTex.createView() },
+      { binding: 2, resource: this.atlasTex.createView() },
+      { binding: 3, resource: this.paletteTex.createView() },
+      { binding: 4, resource: this.sampler }] });
+  },
+
+  _seedParticles() {
+    const N = this.particleCount, arr = new Float32Array(N * 2);
+    const a = aCur, b = bCur, c = cCur, d = dCur;
+    for (let i = 0; i < N; i++) {
+      let x = Math.sin(i * 12.9898) * 43758.5453; x = (x - Math.floor(x)) * 2 - 1;
+      let y = Math.sin(i * 78.233) * 43758.5453;  y = (y - Math.floor(y)) * 2 - 1;
+      for (let k = 0; k < 30; k++) { const nx = Math.sin(a * y) - Math.cos(b * x); y = Math.sin(c * x) - Math.cos(d * y); x = nx; }
+      arr[i * 2] = x; arr[i * 2 + 1] = y;
+    }
+    this.device.queue.writeBuffer(this.statesBuf, 0, arr);
+  },
+
+  _updateParams(now) {
+    const t = now * 0.001;
+    pxN += (mxN - pxN) * 0.05; pyN += (myN - pyN) * 0.05;
+    const ms = CONFIG.mouseSense, dsp = CONFIG.driftSpeed, da = CONFIG.driftAmp;
+    const a = CONFIG.a + da * Math.sin(0.31 * t * dsp)       + pxN * ms * 0.15;
+    const b = CONFIG.b + da * Math.sin(0.23 * t * dsp + 2.1);
+    const c = CONFIG.c + da * Math.sin(0.41 * t * dsp + 4.2) + pyN * ms * 0.15;
+    const d = CONFIG.d + da * Math.sin(0.29 * t * dsp + 1.3);
+    aCur = a; bCur = b; cCur = c; dCur = d;
+    const f = this.params;
+    f[0] = a; f[1] = b; f[2] = c; f[3] = d;
+    f[4] = cols; f[5] = rows; f[6] = this.particleCount; f[7] = this.steps;
+    f[8] = originX * dpr; f[9] = originY * dpr; f[10] = worldScale * dpr; f[11] = cellW * dpr;
+    f[12] = cellH * dpr; f[13] = CONFIG.fieldDecay; f[14] = CONFIG.threshold; f[15] = CONFIG.webCap;
+    f[16] = Math.floor(t * CONFIG.webScroll); f[17] = this.codeW; f[18] = this.codeH; f[19] = FALLBACK_COL;
+    f[20] = atlasChars.length; f[21] = canvas.width; f[22] = canvas.height; f[23] = this.glyphGain;
+    f[24] = this.compExposure; f[25] = CONFIG.exposure; f[26] = t; f[27] = CONFIG.bgGlow;
+    f[28] = CONFIG.bgScale; f[29] = CONFIG.bgFlow; f[30] = CONFIG.bgScroll; f[31] = CONFIG.bgContrast;
+    f[32] = CONFIG.swirl; f[33] = CONFIG.swirlPower;
+    f[34] = CONFIG.bloom; f[35] = CONFIG.bloomThresh;
+    f[36] = this.bloomW; f[37] = this.bloomH; f[38] = CONFIG.speed; f[39] = CONFIG.bgSpeed;
+    this.device.queue.writeBuffer(this.paramsBuf, 0, f);
+  },
+
+  renderOnce(now) {
+    const device = this.device;
+    const dtMs = now - lastT; lastT = now;
+    if (dtMs > 0) fpsAvg += (1000 / dtMs - fpsAvg) * 0.1;
+
+    if (this._reseed) {
+      device.queue.writeBuffer(this.field, 0, new Float32Array(cols * rows));
+      device.queue.writeBuffer(this.visits, 0, new Uint32Array(cols * rows));
+      device.queue.writeBuffer(this.maxBuf, 0, new Uint32Array([0]));
+      device.queue.writeBuffer(this.dmaxBuf, 0, new Float32Array([1]));
+      this._seedParticles();
+      this._reseed = false;
+    }
+    this._updateParams(now);
+
+    const enc = device.createCommandEncoder();
+    { const cp = enc.beginComputePass();
+      cp.setPipeline(this.pOrbit);   cp.setBindGroup(0, this.bgOrbit);   cp.dispatchWorkgroups(Math.ceil(this.particleCount / 64));
+      cp.setPipeline(this.pField);   cp.setBindGroup(0, this.bgField);   cp.dispatchWorkgroups(Math.ceil((cols * rows) / 64));
+      cp.setPipeline(this.pResolve); cp.setBindGroup(0, this.bgResolve); cp.dispatchWorkgroups(1);
+      cp.end(); }
+    { // sky clears the HDR target and lays down the drifting code field...
+      const rp = enc.beginRenderPass({ colorAttachments: [{ view: this.hdrView,
+        clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }] });
+      rp.setPipeline(this.pSky); rp.setBindGroup(0, this.bgSky); rp.draw(3, 1);
+      rp.end();
+      // ...then the phosphor web is additively blended on top.
+      const rp2 = enc.beginRenderPass({ colorAttachments: [{ view: this.hdrView,
+        loadOp: "load", storeOp: "store" }] });
+      rp2.setPipeline(this.pGlyph); rp2.setBindGroup(0, this.bgGlyph); rp2.draw(6, cols * rows);
+      rp2.end(); }
+    // bloom chain (bright-pass -> H blur -> V blur) — skipped entirely when bloom is off
+    if (CONFIG.bloom > 0.001) {
+      { const rp = enc.beginRenderPass({ colorAttachments: [{ view: this.bloomAView,
+          clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }] });
+        rp.setPipeline(this.pBright); rp.setBindGroup(0, this.bgBright); rp.draw(3, 1); rp.end(); }
+      { const rp = enc.beginRenderPass({ colorAttachments: [{ view: this.bloomBView,
+          clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }] });
+        rp.setPipeline(this.pBlurH); rp.setBindGroup(0, this.bgBlurH); rp.draw(3, 1); rp.end(); }
+      { const rp = enc.beginRenderPass({ colorAttachments: [{ view: this.bloomAView,
+          clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }] });
+        rp.setPipeline(this.pBlurV); rp.setBindGroup(0, this.bgBlurV); rp.draw(3, 1); rp.end(); }
+    }
+    { const rp = enc.beginRenderPass({ colorAttachments: [{ view: this.gctx.getCurrentTexture().createView(),
+        clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }] });
+      rp.setPipeline(this.pComposite); rp.setBindGroup(0, this.bgComposite); rp.draw(3, 1);
+      rp.end(); }
+    device.queue.submit([enc.finish()]);
+
+    // CPU Lyapunov probe (telemetry, same as the 2D path)
+    for (let i = 0; i < PROBE_ITERS; i++) {
+      const j00 = bCur * Math.sin(bCur * probeX), j01 = aCur * Math.cos(aCur * probeY);
+      const j10 = cCur * Math.cos(cCur * probeX), j11 = dCur * Math.sin(dCur * probeY);
+      const wx = j00 * probeVX + j01 * probeVY, wy = j10 * probeVX + j11 * probeVY;
+      const nrm = Math.hypot(wx, wy);
+      if (nrm > 1e-12) { probeSum += Math.log(nrm); probeVX = wx / nrm; probeVY = wy / nrm; probeN++; }
+      const nx = Math.sin(aCur * probeY) - Math.cos(bCur * probeX);
+      probeY = Math.sin(cCur * probeX) - Math.cos(dCur * probeY); probeX = nx;
+    }
+    const lam = probeN > 0 ? probeSum / probeN : 0;
+    lambdaSmooth += (lam - lambdaSmooth) * 0.05;
+    if (statsOn) {
+      telIters = this.particleCount * this.steps + PROBE_ITERS;
+      if (now - lastStatT > 200) { updateTelem(); lastStatT = now; }
+    }
+  },
+
+  start() {
+    this._running = true;
+    const loop = t => { if (!this._running) return; this.renderOnce(t); requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+  },
+
+  resize_and_reseed() { this.resize(); },
+  paletteChanged() { this._buildPaletteTexture(); },
+  constantsChanged() { resetProbe(); this._reseed = true; },
+  reseedAll() { this._buildPaletteTexture(); resetProbe(); this._reseed = true; recomputeWorldTransform(); },
+
+  // --- verification helper: read back the density field (rAF-independent) ---
+  async debugReadField() {
+    const device = this.device, n = cols * rows, size = n * 4;
+    const rb = device.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(this.field, 0, rb, 0, size);
+    device.queue.submit([enc.finish()]);
+    await rb.mapAsync(GPUMapMode.READ);
+    const arr = new Float32Array(rb.getMappedRange().slice(0));
+    rb.unmap(); rb.destroy();
+    let mx = 0, nz = 0, sum = 0;
+    for (const v of arr) { if (v > 0) nz++; if (v > mx) mx = v; sum += v; }
+    return { cells: n, nonzero: nz, occupancy: +(100 * nz / n).toFixed(1), max: +mx.toFixed(1), mean: +(sum / n).toFixed(3) };
+  },
+
+  // --- verification helper: read back a small centred region of the swapchain ---
+  async debugCapture(sz = 64) {
+    const device = this.device;
+    const x = Math.max(0, ((canvas.width - sz) / 2) | 0), y = Math.max(0, ((canvas.height - sz) / 2) | 0);
+    const bpr = Math.ceil(sz * 4 / 256) * 256;
+    const rb = device.createBuffer({ size: bpr * sz, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = device.createCommandEncoder();
+    const rp = enc.beginRenderPass({ colorAttachments: [{ view: this.gctx.getCurrentTexture().createView(),
+      clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }] });
+    rp.setPipeline(this.pComposite); rp.setBindGroup(0, this.bgComposite); rp.draw(3, 1); rp.end();
+    enc.copyTextureToBuffer({ texture: this.gctx.getCurrentTexture(), origin: { x, y, z: 0 } },
+      { buffer: rb, bytesPerRow: bpr }, { width: sz, height: sz });
+    device.queue.submit([enc.finish()]);
+    await rb.mapAsync(GPUMapMode.READ);
+    const d = new Uint8Array(rb.getMappedRange().slice(0));
+    rb.unmap(); rb.destroy();
+    let lit = 0, maxL = 0;
+    for (let r = 0; r < sz; r++) for (let cX = 0; cX < sz; cX++) {
+      const i = r * bpr + cX * 4, l = Math.max(d[i], d[i + 1], d[i + 2]);
+      if (l > 30) lit++; if (l > maxL) maxL = l;
+    }
+    return { region: sz + "x" + sz, lit, maxLum: maxL };
+  },
+};
+
+/* ============================================================================
+   BOOT — pick the renderer. WebGPU when available (the dense, glowing path);
+   the Canvas2D renderer (R2D) as a universal fallback. Append ?renderer=2d to
+   the URL to force the fallback for testing; ?renderer=gpu to require WebGPU.
+   ============================================================================ */
+async function detectGPU() {
+  if (!navigator.gpu) return null;
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) return null;
+    const device = await adapter.requestDevice();
+    return { adapter, device };
+  } catch (e) { return null; }
+}
+async function boot() {
+  const forced = new URLSearchParams(location.search).get("renderer");
+  let gpu = null;
+  if (forced !== "2d") gpu = await detectGPU();
+  if (gpu && forced !== "2d" && typeof RGPU !== "undefined") {
+    try {
+      activeRenderer = RGPU;
+      await RGPU.init(gpu);
+      RGPU.start();
+      document.body.dataset.renderer = "webgpu";
+      return;
+    } catch (e) {
+      console.error("[boot] WebGPU init failed — falling back to Canvas2D:", e);
+    }
+  }
+  if (forced === "gpu") { console.error("[boot] WebGPU required but unavailable."); }
+  activeRenderer = R2D;
+  R2D.init();
+  R2D.start();
+  document.body.dataset.renderer = "canvas2d";
+}
+// Debug handle for headless/frozen-tab verification (drive frames synchronously).
+window.__app = { RGPU, R2D, CONFIG, get active() { return activeRenderer; } };
+boot();
 </script>
 </body>
 </html>
