@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>De Jong Strange Attractor · ASCII Simulation</title>
-  <meta name="description" content="A ghostly fractal web of the Peter de Jong attractor, rendered as tiny monospace glyphs on a drifting code sky. Real dynamical systems at 60fps — fork it and play.">
+  <meta name="description" content="A ghostly fractal web of the Peter de Jong attractor, rendered as tiny monospace glyphs on a drifting code sky. Real dynamical systems at 60fps. Fork it and play.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -20,7 +20,7 @@
     html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
     body { font-family: "Inter", system-ui, -apple-system, sans-serif; }
 
-    /* The simulation lives here — one canvas, filling the viewport. */
+    /* The simulation lives here, one canvas, filling the viewport. */
     #field { position: fixed; inset: 0; display: block; width: 100vw; height: 100vh; }
 
     /* ============================ Top-right buttons ============================ */
@@ -207,27 +207,29 @@
 "use strict";
 
 /* ============================================================================
-   Peter de Jong strange-attractor — standalone ASCII edition.
+   Peter de Jong strange-attractor: standalone ASCII edition.
    Author: Vaishanth Srinivasan
 
-   HOW IT WORKS (the 30-second version):
-     The de Jong map is two lines of trig:
+   HOW IT WORKS (the 30-second version, we know you're busy):
+     
+   The de Jong map is 2 lines:
         x' = sin(a*y) - cos(b*x)
         y' = sin(c*x) - cos(d*y)
-     Iterate it millions of times and the points pile up on a fractal set. We
-     count visits into a grid (the "density field") — that histogram, log-toned
-     and drawn as an oscilloscope-style phosphor, IS the ghostly web. Behind it
-     drifts an independent "code sky" of streaming glyphs for atmosphere.
+    
+    We iterate it millions of times, and the points pile up on a fractal set. We
+    count visits into a grid (the "density field"), that histogram, log-toned
+    and drawn as an oscilloscope-style phosphor, IS the ghostly web. Behind it
+    is an epic independent "code nebula" of streaming glyphs for atmosphere.
 
    HOW TO HACK IT:
-     1. Tweak any number in CONFIG below (or drag the sliders — same thing, live).
+     1. Tweak any number in CONFIG below (or drag the sliders, same thing, live).
      2. Add a slider: drop one line into the CONTROLS array further down.
      3. The whole simulation lives in the frame() loop, ~1 screen down.
-   The world box is [-2.05, 2.05]^2 — every iterate is guaranteed to sit inside.
+   The world box is [-2.05, 2.05]^2, every iterate is guaranteed to sit inside.
    ============================================================================ */
 const CONFIG = {
   // ---- render ----
-  fontSize:    9,       // glyph size in px — deliberately small so filaments resolve
+  fontSize:    9,       // glyph size in px, deliberately small so filaments resolve
   lineHeight:  1.2,     // cell height = fontSize * lineHeight
   maxDPR:      1.5,     // cap device-pixel-ratio (lower = fewer pixels = faster)
   levels:      26,      // colour quantization buckets
@@ -240,7 +242,7 @@ const CONFIG = {
   driftSpeed:  0.5,     // how fast the constants drift
   mouseSense:  0.6,     // pointer nudge of a (x) and c (y)
 
-  // ---- density web (Layer A) — an oscilloscope-style phosphor. Each frame paints a
+  // ---- density web (Layer A), an oscilloscope-style phosphor. Each frame paints a
   //      fresh batch of map iterations, then the whole field fades a touch. The newest
   //      iterations sit at the highest opacity; older ones dim slowly (fieldDecay). ----
   fieldIters:  22000,   // painter-orbit iterations per frame (fewer -> clearer recency)
@@ -252,17 +254,17 @@ const CONFIG = {
   webCap:      1.0,     // brightest the web reaches (full palette range)
   threshold:   0.015,   // cells dimmer than this are left to the background sky
 
-  // ---- background "code sky" (Layer 0) — a full, continuous field, ported from the
+  // ---- background "code sky" (Layer 0), a full, continuous field, ported from the
   //      Schwarzschild ray tracer's lensed-code background. Its own independent pass. ----
   bgGlow:      1.0,     // master brightness of the sky (0 = off / pure black)
   bgScroll:    0.6,     // gentle character streaming through the field
-  bgScale:     0.045,   // spatial frequency — broad, soft ribbons (smaller = broader)
+  bgScale:     0.045,   // spatial frequency, broad, soft ribbons (smaller = broader)
   bgFlow:      0.22,    // how fast the field morphs and flows over time
   bgContrast:  1.7,     // ridge/valley separation (smooth pow curve via ambLUT)
 
   // ---- WebGPU swirl (inverse-mapped rotation of the whole glyph field, from index_mid) ----
   speed:       0.25,    // attractor-glyph swirl speed
-  bgSpeed:     0.16,    // background swirl speed (decoupled — a touch slower)
+  bgSpeed:     0.16,    // background swirl speed (decoupled, a touch slower)
   swirl:       1.6,     // twist strength
   swirlPower:  0.5,     // how the twist scales with distance from centre
 
@@ -270,14 +272,14 @@ const CONFIG = {
   zoom:        1.0,
 
   // Active colour ramp [r,g,b], cold valley first -> hot ridge last. Swapped by presets.
-  // Default is "Aqua" — the liquid-in-water look.
+  // Default is "Aqua", the liquid-in-water look.
   palette: [
     [3,10,24], [6,32,60], [10,70,104], [18,120,150],
     [40,170,190], [96,214,220], [176,240,242], [224,253,255],
   ],
 };
 
-/* Named palette presets — the "Palette" buttons swap CONFIG.palette to one of these.
+/* Named palette presets, the "Palette" buttons swap CONFIG.palette to one of these.
    The first three are the new "liquid in water" ramps; the original five follow. */
 const PALETTES = {
   // --- Liquid-in-water ramps (deep ocean -> teal -> aqua -> foam/caustics) ---
@@ -292,7 +294,7 @@ const PALETTES = {
   Solar:     [[20,6,2],[60,10,6],[110,22,10],[168,50,14],[214,96,20],[240,150,40],[250,205,90],[255,245,190]],
 };
 
-/* Named attractor presets — set the base (a, b, c, d). From Paul Bourke's gallery. */
+/* Named attractor presets, set the base (a, b, c, d). From Paul Bourke's gallery. */
 const ATTR_PRESETS = {
   Classic: [ 1.641,  1.902,  0.316,  1.525],
   Web:     [ 0.970, -1.899,  1.381, -1.506],
@@ -301,7 +303,7 @@ const ATTR_PRESETS = {
   Ribbon:  [-2.000, -2.000, -1.200,  2.000],
 };
 
-/* Source text the glyphs are sampled from — gives the "scrolling code" identity.
+/* Source text the glyphs are sampled from. Gives the "scrolling code" identity.
    Swap these strings for anything you like; the web and code sky render out of them. */
 const SOURCE = `
 DJ01_Genesis_DeJong_Map_X = "x' = sin(a*y) - cos(b*x)"
@@ -327,7 +329,7 @@ IN01_Invariant_Density = "rho(x) = lim (1/n) * sum delta(x - x_k)"
 `;
 const LINES = SOURCE.trim().split("\n").map(s => s.trim() + "  ");
 
-/* ---- Fast integer-lattice value noise + fBm (no deps) — same generator as the
+/* ---- Fast integer-lattice value noise + fBm (no deps) -> same generator as the
    Schwarzschild ray tracer. Drives the dim, animated background code field so its
    bright ridges drift over time: the moving flow is what the colour highlights. ---- */
 function vhash(ix, iy, iz) {
@@ -362,7 +364,7 @@ function fbm(x, y, z, octaves) {
 
 // ---- Renderer ----
 // One <canvas>, one context. The context type (2d vs webgpu) is chosen once, at
-// boot(), based on WebGPU availability — so `ctx` stays null in GPU mode and every
+// boot(), based on WebGPU availability, so `ctx` stays null in GPU mode and every
 // Canvas2D-only function below simply no-ops. R2D.init() acquires it for the fallback.
 const canvas = document.getElementById("field");
 let ctx = null;
@@ -374,11 +376,11 @@ let cellW = 0, cellH = 0, cols = 0, rows = 0;
 const BOX = 2.05;
 let originX = 0, originY = 0, worldScale = 1;   // screen_px = origin + world * scale (y flipped)
 
-// Density field (Layer A) — one Float32 cell per character cell. Reallocated on resize.
+// Density field (Layer A): one Float32 cell per character cell. Reallocated on resize.
 let density = new Float32Array(1);
 let dMax = 1;   // smoothed max cell value, drives the log tone-map
 
-// Background field (Layer 0) — one fBm sample per column, refreshed every other row
+// Background field (Layer 0): one fBm sample per column, refreshed every other row
 // (the field is soft, so half-res sampling is invisible but ~4x cheaper).
 let ambRow = new Float32Array(1);
 
@@ -526,7 +528,7 @@ const DECODE_LERP_CLOSE = DECODE_LERP * 0.4;
 let adaptiveScale = 1;
 
 /* ============================================================================
-   LAYER 0 — the "code sky" background. A full, continuous field of streaming
+   LAYER 0: the "code nebula" background. A full, continuous field of streaming
    glyphs, ported from the Schwarzschild ray tracer's lensed-code background and
    kept completely independent of the attractor: soft fBm ribbons that morph and
    flow over time (bgFlow), gentle character streaming (bgScroll), a smooth
@@ -572,7 +574,7 @@ function frame(now) {
   const dtMs = now - lastT; lastT = now;
   if (dtMs > 0) fpsAvg += (1000 / dtMs - fpsAvg) * 0.1;
 
-  // Hoist hot config into locals — re-read every frame so slider edits stay live.
+  // Hoist hot config into locals, re-read every frame so slider edits stay live.
   const levels = CONFIG.levels, exposure = CONFIG.exposure;
   const decay = CONFIG.fieldDecay, threshold = CONFIG.threshold;
   const webCap = CONFIG.webCap;
@@ -593,11 +595,11 @@ function frame(now) {
   aCur = a; bCur = b; cCur = c; dCur = d;
 
   /* =========================================================================
-     LAYER A — the density web, rendered as a phosphor.
+     LAYER A: the density web, rendered as a phosphor.
      Fade the whole grid a touch (fieldDecay), then run the painter orbit and add
      each fresh visit. The newest iterations sit brightest; cells that stop being
      visited dim slowly. Log tone-mapped, this is the invariant density with a
-     recency glow — an oscilloscope trace of the map.
+     recency glow, an oscilloscope trace of the map.
      ========================================================================= */
   const grid = density, gLen = grid.length;
   for (let i = 0; i < gLen; i++) grid[i] *= decay;
@@ -627,7 +629,7 @@ function frame(now) {
   ctx.fillStyle = "#050a10";
   ctx.fillRect(0, 0, W, H);
 
-  // Layer 0 — the independent, full-screen "code sky" background (its own pass).
+  // Layer 0: the independent, full-screen "code sky" background (its own pass).
   // The attractor knows nothing about it; the web is simply drawn on top.
   renderBackground(t);
 
@@ -636,7 +638,7 @@ function frame(now) {
   let glyphs = 0, occ = 0;
   const atlas = atlasBase, twd = tileWd, thd = tileHd;
 
-  // Layer A — the phosphor attractor web, drawn on top of the sky. Skip empty cells
+  // Layer A: the phosphor attractor web, drawn on top of the sky. Skip empty cells
   // (the main perf win) so this pass only touches the lit filaments.
   for (let gy = 0; gy < rows; gy++) {
     const rowBase = gy * cols;
@@ -659,7 +661,7 @@ function frame(now) {
   }
 
   /* =========================================================================
-     Lyapunov probe — one dedicated orbit + tangent vector, a few steps a frame.
+     Lyapunov probe: one dedicated orbit + tangent vector, a few steps a frame.
      ========================================================================= */
   for (let i = 0; i < PROBE_ITERS; i++) {
     const j00 = b*Math.sin(b*probeX), j01 = a*Math.cos(a*probeY);
@@ -783,7 +785,7 @@ function buildControlPanel() {
     const input = document.createElement("input");
     input.type = "range"; input.min = cc.min; input.max = cc.max; input.step = cc.step;
     input.value = CONFIG[cc.k];
-    // Editable value field — click the number and type a value (Enter / click-away commits).
+    // Editable value field: click the number and type a value (Enter / click-away commits).
     const valEl = document.createElement("input");
     valEl.className = "v"; valEl.type = "text"; valEl.inputMode = "decimal";
     valEl.setAttribute("aria-label", cc.label + " value");
@@ -833,7 +835,7 @@ function applyPalette(name) {
   }
 })();
 
-// Attractor preset buttons — set the base constants, reseed the orbits.
+// Attractor preset buttons: set the base constants, reseed the orbits.
 function applyAttrPreset(name) {
   const p = ATTR_PRESETS[name];
   CONFIG.a = p[0]; CONFIG.b = p[1]; CONFIG.c = p[2]; CONFIG.d = p[3];
@@ -950,7 +952,7 @@ window.addEventListener("wheel", e => {
 }, { passive: false });
 
 /* ============================================================================
-   WEBGPU RENDERER (RGPU) — the dense, glowing path.
+   WEBGPU RENDERER (RGPU): the dense, glowing path.
    Pipeline per frame:
      compute orbit  : N persistent de Jong particles, K steps each, atomicAdd into a
                       visit grid (millions of iterations/frame vs ~22k on the CPU).
@@ -1358,7 +1360,7 @@ const RGPU = {
     // bend smoothly (like the lensed reference) instead of snapping to a cell grid.
     const device = this.device;
     const cols = this.codeW, rows = this.codeH;   // glyph counts (from _buildCodeTexture)
-    const charW = 8, charH = 16;                  // texture cell — aspect matches the screen cell (~0.5)
+    const charW = 8, charH = 16;                  // texture cel: aspect matches the screen cell (~0.5)
     const w = cols * charW, h = rows * charH;
     const cvs = document.createElement("canvas"); cvs.width = w; cvs.height = h;
     const a = cvs.getContext("2d");
@@ -1427,7 +1429,7 @@ const RGPU = {
     canvas.width = Math.max(1, Math.round(W * dpr));
     canvas.height = Math.max(1, Math.round(H * dpr));
     // measure cell metrics with a throwaway 2D context (main canvas is a webgpu context).
-    // CONFIG.zoom scales the glyph size — bigger glyphs / fewer cells when zoomed in.
+    // CONFIG.zoom scales the glyph size: bigger glyphs / fewer cells when zoomed in.
     const fs = CONFIG.fontSize * CONFIG.zoom;
     const m = document.createElement("canvas").getContext("2d");
     m.font = `${fs}px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace`;
@@ -1584,7 +1586,7 @@ const RGPU = {
         loadOp: "load", storeOp: "store" }] });
       rp2.setPipeline(this.pGlyph); rp2.setBindGroup(0, this.bgGlyph); rp2.draw(6, cols * rows);
       rp2.end(); }
-    // bloom chain (bright-pass -> H blur -> V blur) — skipped entirely when bloom is off
+    // bloom chain (bright-pass -> H blur -> V blur), skipped entirely when bloom is off
     if (CONFIG.bloom > 0.001) {
       { const rp = enc.beginRenderPass({ colorAttachments: [{ view: this.bloomAView,
           clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }] });
@@ -1672,7 +1674,7 @@ const RGPU = {
 };
 
 /* ============================================================================
-   BOOT — pick the renderer. WebGPU when available (the dense, glowing path);
+   BOOT: pick the renderer. WebGPU when available (the dense, glowing path);
    the Canvas2D renderer (R2D) as a universal fallback. Append ?renderer=2d to
    the URL to force the fallback for testing; ?renderer=gpu to require WebGPU.
    ============================================================================ */
@@ -1697,7 +1699,7 @@ async function boot() {
       document.body.dataset.renderer = "webgpu";
       return;
     } catch (e) {
-      console.error("[boot] WebGPU init failed — falling back to Canvas2D:", e);
+      console.error("[boot] WebGPU init failed!!! Falling back to Canvas2D:", e);
     }
   }
   if (forced === "gpu") { console.error("[boot] WebGPU required but unavailable."); }
