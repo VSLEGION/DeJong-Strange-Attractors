@@ -2,6 +2,8 @@
 
 ![De Jong Attractor Banner](Assets/banner.png)
 
+Try It!: https://vslegion.github.io/DeJong-Strange-Attractors/
+
 A real-time, zero-dependency browser toy that renders the **Peter de Jong strange attractor**
 as a ghostly, oscilloscope-style web of tiny monospace glyphs. It calculates tens of thousands
 of orbit iterations per frame to map out the attractor's invariant density — a live experiment
